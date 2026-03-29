@@ -3,6 +3,7 @@ import torch
 import os
 from abc import ABC, abstractmethod
 from omegaconf import OmegaConf, DictConfig
+from sklearn.metrics import accuracy_score
 
 
 class Logger(ABC):
@@ -35,7 +36,7 @@ class WandbLogger(Logger):
             project=config.wandb.project,
             entity=config.wandb.entity,
             name=config.experiment_name,
-            config=cfg_dict,
+            config=cfg_dict
         )
         print(f"[WandbLogger] Run inizializzata: {self._run.url}")
  
@@ -60,56 +61,87 @@ def unpack_loss(loss_output) -> tuple[torch.Tensor, dict]:
         components = {"total": loss_output}
     return total, components
 
-def evaluate_and_log(model: torch.nn.Module, dl_val, loss_function, device: torch.device, epoch: int,
-                      train_losses: dict, logger: Logger, metrics_fn=None) -> dict:
+
+class Metric(ABC):
+    @abstractmethod
+    def accumulate(self, out, gts):
+        pass
+
+    @abstractmethod
+    def compute(self) -> dict:
+        pass
+
+    @abstractmethod
+    def reset(self):
+        pass
+
+class ClassificationMetric(Metric):
+    def __init__(self):
+        self.preds = []
+        self.gts = []
+
+    def accumulate(self, out, ys):
+        preds = torch.argmax(out, dim=1).detach().cpu().numpy()
+        self.preds.append(preds)
+        self.gts.append(ys.detach().cpu().numpy())
+
+    def compute(self) -> dict:
+        preds = np.hstack(self.preds)
+        gts = np.hstack(self.gts)
+        return {
+            "accuracy": accuracy_score(gts, preds),
+        }
+
+    def reset(self):
+        self.preds = []
+        self.gts = []
+
+def evaluate_and_log(model, dl_val, loss_function, device, epoch, train_losses,
+                      logger, metrics: Metric):
     """
-    Esegue la validation loop, raccoglie le metriche e le logga insieme
+    Esegue il validation loop, raccoglie le metriche e le logga insieme
     a quelle di training.
-    Metrics_fn deve essere una funzione che ritorna un dict con chiave metrica e
-    valore il valore della metrica in float
- 
-    Ritorna il dict delle metriche di validation
+    Metrics é una classe che accumula i risultati dei vari batch e poi calcola 
+    la metriche su tutto il validation set
+
     """
     model.eval()
     val_loss_components = {}
-    val_extra_metrics = {}
+    total_samples = 0
+
+    metrics.reset()
 
     with torch.no_grad():
         for xs, gts in dl_val:
             xs = xs.to(device)
             gts = gts.to(device)
+            batch_size = len(xs)
 
             out = model(xs)
             _, components = unpack_loss(loss_function(out, gts))
 
             for k, v in components.items():
-                val_loss_components.setdefault(k, []).append(
+                val_loss_components.setdefault(k, 0.0)
+                val_loss_components[k] += (
                     v.item() if isinstance(v, torch.Tensor) else float(v)
-                )
+                ) * batch_size
 
-            # calcola metriche extra se la funzione è stata passata
-            if metrics_fn is not None:
-                extra = metrics_fn(out, gts) 
-                for k, v in extra.items():
-                    val_extra_metrics.setdefault(k, []).append(float(v))
+            total_samples += batch_size
 
-    # media per ogni componente
+            metrics.accumulate(out, gts)
+
     val_metrics = {
-        f"val/{k}": float(np.mean(vs))
-        for k, vs in {**val_loss_components, **val_extra_metrics}.items()
+        f"val/{k}": total / total_samples
+        for k, total in val_loss_components.items()
     }
-    # prefissa le loss di training con "train/"
-    prefixed_train = {f"train/{k}": v for k, v in train_losses.items()}
 
-     
-    logger.log({**prefixed_train, **val_metrics}, step=epoch)
+    val_metrics.update({f"val/{k}": v for k, v in metrics.compute().items()})
 
-    return val_metrics
-
+    logger.log({**val_metrics}, step=epoch)
 
 
 def train_loop(model, opt, scheduler, loss_function, dl_train, dl_val, device,
-                config: DictConfig, logger: Logger) -> None:
+                config: DictConfig, logger: Logger, metrics: Metric) -> None:
     
     """
     Loop di training completo.
@@ -118,22 +150,26 @@ def train_loop(model, opt, scheduler, loss_function, dl_train, dl_val, device,
         epochs           -numero di epoche
         log_every        -ogni quante epoche loggare
         experiment_name  - nome dell'esperimento
+
+    la loss function deve calcolare la loss sul batch ed usare come reduce mean
     """
 
     logger.init(config)
 
-    epochs = config.epochs
-    log_every = config.log_every
+    epochs = config.training.epochs
+    log_every = config.training.log_every
 
     for epoch in range(1, epochs+1):
 
         model.train()
-        epoch_loss_components: dict[str, list] = {}
+        epoch_loss_components = {}
+        total_samples = 0
 
         for xs, gts in dl_train:
 
-            xs.to(device)
-            gts.to(device)
+            xs = xs.to(device)
+            gts = gts.to(device)
+            batch_size = len(xs)
 
             opt.zero_grad()
             out = model(xs)
@@ -142,21 +178,30 @@ def train_loop(model, opt, scheduler, loss_function, dl_train, dl_val, device,
             loss.backward()
             opt.step()
 
+            
             for k, v in components.items():
-                epoch_loss_components.setdefault(k, []).append(
-                    v.item() if isinstance(v, torch.Tensor) else float(v)
-                )
+                    epoch_loss_components.setdefault(k, 0.0)
+                    epoch_loss_components[k] += (
+                        v.item() if isinstance(v, torch.Tensor) else float(v)
+                    ) * batch_size
+
+            total_samples += batch_size
         
         # loss medie per questa epoca
         train_losses = {
-            k: float(np.mean(vs)) for k, vs in epoch_loss_components.items()
+            k: total / total_samples for k, total in epoch_loss_components.items()
         }
-        
+
+        print(f"Epoch {epoch}/{epochs} - loss: {train_losses['total']:.4f}")
+
+        train_losses["lr"] = opt.param_groups[0]["lr"]
+        logger.log({f"train/{k}": v for k, v in train_losses.items()}, step=epoch)
+
         #logga ogni log_everyy epoche
         if epoch % log_every == 0:
             evaluate_and_log(
                 model, dl_val, loss_function, device,
-                epoch, train_losses, logger,
+                epoch, train_losses, logger, metrics
             )
         
         scheduler.step()

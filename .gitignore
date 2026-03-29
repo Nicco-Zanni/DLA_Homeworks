@@ -1,2 +1,5 @@
 .venv/
 _data/
+wandb/
+__pycache__/
+*.pyc
