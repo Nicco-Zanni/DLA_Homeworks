@@ -3,3 +3,4 @@ _data/
 wandb/
 __pycache__/
 *.pyc
+*.pth

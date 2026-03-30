@@ -1,0 +1,14 @@
+experiment_name: Secondo tentativo Finetune
+
+training:
+  epochs: 30
+  log_every: 5
+  learning_rate: 0.001
+  batch_size: 512
+  val_size: 0.2
+  step_size: 10
+  gamma: 0.1
+
+wandb:
+  project: Finetune ResNet50
+  entity: null
