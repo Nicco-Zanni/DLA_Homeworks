@@ -1,4 +1,4 @@
-experiment_name: Secondo tentativo Finetune
+experiment_name: Terzo_tentativo_Finetune
 
 training:
   epochs: 30

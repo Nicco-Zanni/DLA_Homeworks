@@ -54,8 +54,13 @@ def unpack_loss(loss_output) -> tuple[torch.Tensor, dict]:
     """
 
     if isinstance(loss_output, dict):
-        total = loss_output["total"]
-        components = loss_output
+        if "total" in loss_output:
+            total = loss_output["total"]
+            components = loss_output
+        else:
+            # modelli tipo Faster R-CNN che ritornano {"loss_cls": ..., "loss_box": ...}
+            total = sum(loss_output.values())
+            components = {**loss_output, "total": total}
     else:
         total = loss_output
         components = {"total": loss_output}
@@ -96,8 +101,63 @@ class ClassificationMetric(Metric):
         self.preds = []
         self.gts = []
 
-def evaluate_and_log(model, dl_val, loss_function, device, epoch, train_losses,
-                      logger, metrics: Metric):
+class ForwardPass(ABC):
+    """
+    Astrae il modo in cui si esegue il forward pass e si calcola la loss.
+    Contratto: ritorna sempre (out, loss_result)
+      - out        : predizioni del modello, None se non disponibili (es. training detection)
+      - loss_result: tensore scalare, dict con 'total', dict senza 'total', oppure None in eval
+                     se il modello non calcola la loss internamente
+    """
+    @abstractmethod
+    def __call__(self, model, xs, gts) -> tuple:
+        ...
+
+
+class ExternalLossForward(ForwardPass):
+    """
+    Modelli classici: out = model(x), loss = loss_fn(out, gts).
+    Es: classificatori, segmentatori.
+    """
+    def __init__(self, loss_fn):
+        self.loss_fn = loss_fn
+
+    def __call__(self, model, xs, gts):
+        out = model(xs)
+        loss_result = self.loss_fn(out, gts)
+        return out, loss_result
+
+
+
+class InternalLossForward(ForwardPass):
+    """
+    Modelli che calcolano la loss internamente e ritornano un dict di loss in training.
+    Es: Faster R-CNN, DETR, YOLOv5.
+    - Training : model(xs, gts) -> dict di loss  (out non disponibile)
+    - Eval     : model(xs)      -> predizioni     (loss non calcolata)
+    """
+    def __call__(self, model, xs, gts):
+        if model.training:
+            loss_dict = model(xs, gts)   # {"loss_cls": ..., "loss_box": ..., ...}
+            return None, loss_dict
+        else:
+            out = model(xs)
+            return out, None
+
+def to_device(data, device):
+    """
+    Sposta ricorsivamente i dati sul device (supporta Tensori, Liste e Dizionari).
+    """
+    if isinstance(data, torch.Tensor):
+        return data.to(device)
+    elif isinstance(data, list):
+        return [to_device(v, device) for v in data]
+    elif isinstance(data, dict):
+        return {k: to_device(v, device) for k, v in data.items()}
+    return data
+
+def evaluate_and_log(model, dl_val, device, epoch,
+                      logger, metrics: Metric, forward_pass: ForwardPass):
     """
     Esegue il validation loop, raccoglie le metriche e le logga insieme
     a quelle di training.
@@ -113,22 +173,27 @@ def evaluate_and_log(model, dl_val, loss_function, device, epoch, train_losses,
 
     with torch.no_grad():
         for xs, gts in dl_val:
-            xs = xs.to(device)
-            gts = gts.to(device)
+            xs = to_device(xs, device)
+            gts = to_device(gts, device)
             batch_size = len(xs)
 
-            out = model(xs)
-            _, components = unpack_loss(loss_function(out, gts))
+            out, loss_results = forward_pass(model, xs, gts)
 
-            for k, v in components.items():
-                val_loss_components.setdefault(k, 0.0)
-                val_loss_components[k] += (
-                    v.item() if isinstance(v, torch.Tensor) else float(v)
-                ) * batch_size
+            if loss_results is not None:
+                _, components = unpack_loss(loss_results)
 
+                for k, v in components.items():
+                    val_loss_components.setdefault(k, 0.0)
+                    val_loss_components[k] += (
+                        v.item() if isinstance(v, torch.Tensor) else float(v)
+                    ) * batch_size
+
+            if out is not None:
+                metrics.accumulate(out, gts)
+            
             total_samples += batch_size
 
-            metrics.accumulate(out, gts)
+            
 
     val_metrics = {
         f"val/{k}": total / total_samples
@@ -140,7 +205,43 @@ def evaluate_and_log(model, dl_val, loss_function, device, epoch, train_losses,
     logger.log({**val_metrics}, step=epoch)
 
 
-def train_loop(model, opt, scheduler, loss_function, dl_train, dl_val, device,
+def train_one_epoch(model, opt, dl_train, device, epoch, logger: Logger, forward_pass: ForwardPass):
+    model.train()
+    epoch_loss_components = {}
+    total_samples = 0
+    for xs, gts in dl_train:
+        xs = to_device(xs, device)
+        gts = to_device(gts, device)
+        batch_size = len(xs)
+
+        opt.zero_grad()
+
+        _, loss_results = forward_pass(model, xs, gts)
+        loss, components = unpack_loss(loss_results)
+        loss.backward()
+        opt.step()
+
+            
+        for k, v in components.items():
+                epoch_loss_components.setdefault(k, 0.0)
+                epoch_loss_components[k] += (
+                    v.item() if isinstance(v, torch.Tensor) else float(v)
+                ) * batch_size
+
+        total_samples += batch_size
+    
+    # loss medie per questa epoca
+    train_losses = {
+        k: total / total_samples for k, total in epoch_loss_components.items()
+    }
+
+    print(f"Loss: {train_losses['total']:.4f}")
+
+    train_losses["lr"] = opt.param_groups[0]["lr"]
+    logger.log({f"train/{k}": v for k, v in train_losses.items()}, step=epoch)
+       
+
+def train_loop(model, opt, scheduler, dl_train, dl_val, forward_pass: ForwardPass, device,
                 config: DictConfig, logger: Logger, metrics: Metric) -> None:
     
     """
@@ -161,47 +262,14 @@ def train_loop(model, opt, scheduler, loss_function, dl_train, dl_val, device,
 
     for epoch in range(1, epochs+1):
 
-        model.train()
-        epoch_loss_components = {}
-        total_samples = 0
-
-        for xs, gts in dl_train:
-
-            xs = xs.to(device)
-            gts = gts.to(device)
-            batch_size = len(xs)
-
-            opt.zero_grad()
-            out = model(xs)
-
-            loss, components = unpack_loss(loss_function(out, gts))
-            loss.backward()
-            opt.step()
-
-            
-            for k, v in components.items():
-                    epoch_loss_components.setdefault(k, 0.0)
-                    epoch_loss_components[k] += (
-                        v.item() if isinstance(v, torch.Tensor) else float(v)
-                    ) * batch_size
-
-            total_samples += batch_size
-        
-        # loss medie per questa epoca
-        train_losses = {
-            k: total / total_samples for k, total in epoch_loss_components.items()
-        }
-
-        print(f"Epoch {epoch}/{epochs} - loss: {train_losses['total']:.4f}")
-
-        train_losses["lr"] = opt.param_groups[0]["lr"]
-        logger.log({f"train/{k}": v for k, v in train_losses.items()}, step=epoch)
+        print(f"Epoch: {epoch}/{epochs}")
+        train_one_epoch(model, opt, dl_train, device, epoch, logger, forward_pass)
 
         #logga ogni log_everyy epoche
         if epoch % log_every == 0:
             evaluate_and_log(
-                model, dl_val, loss_function, device,
-                epoch, train_losses, logger, metrics
+                model, dl_val, device,
+                epoch, logger, metrics, forward_pass
             )
         
         scheduler.step()
