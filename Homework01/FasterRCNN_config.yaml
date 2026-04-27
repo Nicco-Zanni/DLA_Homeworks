@@ -1,12 +1,12 @@
-experiment_name: Terzo_Tentativo_Finetune_tutto
+experiment_name: Sesto_Tentativo_Finetune_tutto
 
 training:
   epochs: 30
   log_every: 5
-  learning_rate: 0.00001
+  learning_rate: 0.0001
   batch_size: 2
   val_size: 0.2
-  step_size: 15
+  step_size: 10
   gamma: 0.1
 
 wandb:
