@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
 import os
+import argparse
 from torch.distributions import Categorical
 
 def select_action(obs, policy):
@@ -234,7 +235,7 @@ def final_evaluation(env_name, policy, device, episodes=10, seed=1234):
 
     return avg_reward, avg_length
 
-def run_experiment(trainer_fn, env_name='CartPole-v1', num_episodes=1000, N=100, M=20, seed=1221, render=False, prefix="", use_baseline=False, std=False, folder="results"):
+def run_experiment(trainer_fn, env_name='CartPole-v1', num_episodes=1000, num_test_episodes=10, N=100, M=20, gamma=0.99, seed=1221, test_seed=1234, render=False, prefix="", use_baseline=False, std=False, folder="results"):
     # Setup
     device, env, env_render = setup(seed, env_name, render)
 
@@ -248,10 +249,10 @@ def run_experiment(trainer_fn, env_name='CartPole-v1', num_episodes=1000, N=100,
 
     # Training
     if use_baseline:
-        avg_rewards, avg_lengths = trainer_fn(policy, state_val_net, env, N, M, env_render=env_render, num_episodes=num_episodes, device=device)
+        avg_rewards, avg_lengths = trainer_fn(policy, state_val_net, env, N, M, env_render=env_render, gamma=gamma, num_episodes=num_episodes, device=device)
         running_rewards = None
     else:
-        running_rewards, avg_rewards, avg_lengths = trainer_fn(policy, env, N, M, env_render=env_render, num_episodes=num_episodes, baseline= std, device=device)
+        running_rewards, avg_rewards, avg_lengths = trainer_fn(policy, env, N, M, env_render=env_render, gamma=gamma, num_episodes=num_episodes, baseline= std, device=device)
 
     # Plot
     if running_rewards is not None:
@@ -263,28 +264,84 @@ def run_experiment(trainer_fn, env_name='CartPole-v1', num_episodes=1000, N=100,
         save_plot(avg_lengths, 'Average Length', 'Eval step', 'Length', f'{prefix}avg_length.png', folder=folder)
 
     # Final evaluation
-    final_evaluation(env_name, policy, device)
+    final_evaluation(env_name, policy, device, num_test_episodes, test_seed)
 
     env.close()
 
     return policy
 
 def main():
-    std = False
-    use_baseline = True
+    parser = argparse.ArgumentParser(
+        description="Train REINFORCE and Baseline REINFORCE algorithms on CartPole.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
 
-    if std:
-        prefix = "std_"
-    else:
-        prefix = "no_std_"
+    # --- Core Settings ---
+    parser.add_argument('--algo', type=str, default='reinforce', choices=['reinforce', 'baseline'],
+                        help='Choose the algorithm to run: "reinforce" or "baseline"')
     
-    if use_baseline:
-        prefix = "baseline_"
-        trainer_fn= baseline_reinforce
-    else:
-        trainer_fn = reinforce
+    parser.add_argument('--env_name', type=str, default='CartPole-v1', 
+                        help='The Gymnasium environment name')
 
-    run_experiment(trainer_fn, prefix = prefix, use_baseline= use_baseline, std=std)
+    # --- Hyperparameters ---
+    parser.add_argument('--num_episodes', type=int, default=1000, 
+                        help='Total number of training episodes')
+    parser.add_argument('--num_test_episodes', type=int, default=10, 
+                        help='Total number of test episodes')
+    parser.add_argument('--N', type=int, default=100, 
+                        help='Evaluate everyy N episodes during training')
+    parser.add_argument('--M', type=int, default=20, 
+                        help='Evaluate agent on M episodes during evaluate step')
+    parser.add_argument('--gamma', type=float, default=0.99, 
+                        help='Discount factor for future rewards (range [0, 1])')
+    
+    # --- Reproducibility (Seeds) ---
+    parser.add_argument('--seed', type=int, default=1221, 
+                        help='Seed used for training randomization')
+    parser.add_argument('--test_seed', type=int, default=1234, 
+                        help='Seed used for testing/evaluation phase')
+
+    # --- Flags & Visualization ---
+    parser.add_argument('--render', action='store_true', 
+                        help='If set, enables graphical rendering of the environment')
+    parser.add_argument('--std', action='store_true', 
+                        help='Apply reward standardization (zero mean, unit variance)')
+    
+    # --- Output & Hardware ---
+    parser.add_argument('--prefix', type=str, default='', 
+                        help='String prefix for log files or saved models')
+    parser.add_argument('--folder', type=str, default='results', 
+                        help='Directory where results will be saved')
+
+
+    args = parser.parse_args()
+
+    base_prefix = f"{args.prefix}_" if args.prefix else ""
+
+    if args.algo == 'baseline':
+        selected_trainer = baseline_reinforce
+        generated_prefix = f"{base_prefix}baseline_"
+    else:
+        selected_trainer = reinforce
+        std_tag = "std" if args.std else "no_std"
+        generated_prefix = f"{base_prefix}{std_tag}_"
+
+    run_experiment(
+        trainer_fn=selected_trainer, 
+        env_name=args.env_name,
+        num_episodes=args.num_episodes,
+        num_test_episodes=args.num_test_episodes,
+        N=args.N,
+        M=args.M,
+        gamma=args.gamma,
+        seed=args.seed,
+        test_seed=args.test_seed,
+        render=args.render,
+        prefix=generated_prefix,
+        use_baseline=args.algo == 'baseline',
+        std=args.std,
+        folder=args.folder
+    )
 
 if __name__ == "__main__":
     main()
