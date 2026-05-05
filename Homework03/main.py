@@ -63,6 +63,35 @@ def make_env(gym_id, seed, idx, capture_video, run_name):
 
     return thunk
 
+def calculate_advantages(agent, rewards, state_values, dones, next_done, next_obs, gae, gamma, gae_lambda, num_steps, device):
+    with torch.no_grad():
+            next_value = agent.get_value(next_obs).reshape(1, -1)
+            if gae: #calculate GAE generalized advantage estimation
+                advantages = torch.zeros_like(rewards).to(device)
+                last_gae = 0
+                for t in reversed(range(num_steps)):
+                    if t == num_steps - 1: #ultimo step se l'episodio non é terminato stimo il return con il critic altrimenti é 0
+                        next_non_terminal = 1.0 - next_done
+                        next_return = next_value
+                    else:
+                        next_non_terminal = 1.0 - dones[t + 1]
+                        next_return = state_values[t + 1]
+                    delta = rewards[t] + gamma * next_return * next_non_terminal - state_values[t]
+                    last_gae = delta + gamma * gae_lambda * next_non_terminal * last_gae
+                    advantages[t] = last_gae
+                returns = advantages + state_values
+            else: #one step advantage
+                returns = torch.zeros_like(rewards).to(device)
+                for t in reversed(range(num_steps)):
+                    if t == num_steps - 1: #ultimo step se l'episodio non é terminato stimo il return con il critic altrimenti é 0
+                        next_non_terminal = 1.0 - next_done
+                        next_return = next_value
+                    else:
+                        next_non_terminal = 1.0 - dones[t + 1]
+                        next_return = returns[t + 1]
+                    returns[t] = rewards[t] + gamma * next_non_terminal * next_return
+                advantages = returns - state_values
+    return advantages
 
 
 def main():
