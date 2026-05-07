@@ -3,12 +3,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-import matplotlib.pyplot as plt
+import wandb
 import os
 import argparse
 import random
 import time
 from torch.distributions import Categorical
+from dataclasses import dataclass
 
 def parse_args():
     # fmt: off
@@ -125,35 +126,35 @@ def make_env(gym_id, seed, idx, capture_video, run_name):
 
     return thunk
 
-def compute_advantages(agent, rewards, state_values, dones, next_done, next_obs, args, device):
+def compute_advantages(agent, buffer, next_done, next_obs, args):
     with torch.no_grad():
             next_value = agent.get_value(next_obs).reshape(1, -1)
             if args.gae: #calculate GAE generalized advantage estimation
-                advantages = torch.zeros_like(rewards).to(device)
+                advantages = torch.zeros_like(buffer.rewards)
                 last_gae = 0
                 for t in reversed(range(args.num_steps)):
                     if t == args.num_steps - 1: #ultimo step se l'episodio non é terminato stimo il return con il critic altrimenti é 0
                         next_non_terminal = 1.0 - next_done
                         next_return = next_value
                     else:
-                        next_non_terminal = 1.0 - dones[t + 1]
-                        next_return = state_values[t + 1]
-                    delta = rewards[t] + args.gamma * next_return * next_non_terminal - state_values[t]
+                        next_non_terminal = 1.0 - buffer.dones[t + 1]
+                        next_return = buffer.state_values[t + 1]
+                    delta = buffer.rewards[t] + args.gamma * next_return * next_non_terminal - buffer.state_values[t]
                     last_gae = delta + args.gamma * args.gae_lambda * next_non_terminal * last_gae
                     advantages[t] = last_gae
-                returns = advantages + state_values
+                returns = advantages + buffer.state_values
             else: #one step advantage
-                returns = torch.zeros_like(rewards).to(device)
+                returns = torch.zeros_like(buffer.rewards)
                 for t in reversed(range(args.num_steps)):
                     if t == args.num_steps - 1: #ultimo step se l'episodio non é terminato stimo il return con il critic altrimenti é 0
                         next_non_terminal = 1.0 - next_done
                         next_return = next_value
                     else:
-                        next_non_terminal = 1.0 - dones[t + 1]
+                        next_non_terminal = 1.0 - buffer.dones[t + 1]
                         next_return = returns[t + 1]
-                    returns[t] = rewards[t] + args.gamma * next_non_terminal * next_return
-                advantages = returns - state_values
-    return advantages
+                    returns[t] = buffer.rewards[t] + args.gamma * next_non_terminal * next_return
+                advantages = returns - buffer.state_values
+    return advantages, returns
 
 def ppo():
     print("hello")
@@ -178,36 +179,23 @@ def test():
     
     envs.close()
 
-def collect_rollout(
-    envs,
-    agent,
-    args,
-    device,
-    next_obs,
-    next_done,
-    obs,
-    actions,
-    logprobs,
-    rewards,
-    dones,
-    values,
-    global_step,):
+def collect_rollout(envs, agent, buffer, next_obs, next_done, global_step, args, device,):
     for step in range(args.num_steps):
         global_step += args.num_envs
 
-        obs[step] = next_obs
-        dones[step] = next_done
+        buffer.obs[step] = next_obs
+        buffer.dones[step] = next_done
 
         with torch.no_grad():
             action, logprob, _, value = agent.get_value_and_action(next_obs)
-            values[step] = value.flatten()#value prima di flatten é [8,1] tolgo dimensione inutile
+            buffer.values[step] = value.flatten()#value prima di flatten é [8,1] tolgo dimensione inutile
 
-        actions[step] = action
-        logprobs[step] = logprob
+        buffer.actions[step] = action
+        buffer.logprobs[step] = logprob
 
         next_obs, reward, term, trunc, info = envs.step(action.cpu().numpy())
 
-        rewards[step] = torch.tensor(reward).to(device).view(-1) #ugale a value sopra
+        buffer.rewards[step] = torch.tensor(reward).to(device).view(-1) #ugale a value sopra
 
         done = term | trunc#or logico serve per sapere se l'env ha finito
         next_obs = torch.Tensor(next_obs).to(device)
@@ -219,22 +207,22 @@ def collect_rollout(
             returns = info["episode"]["r"]
             lengths = info["episode"]["l"]
 
-            for i, d in enumerate(done_envs):
-                if d:
+            for i, done in enumerate(done_envs):
+                if done:
                     print(f"global_step={global_step}, episodic_return={returns[i]}")
+                    print(f"global_step={global_step}, episodic_length={lengths[i]}")
+                    if args.track:
+                        wandb.log(
+                            {
+                                "episodic_return": returns[i],
+                                "episodic_length": lengths[i],
+                            },
+                            step=global_step,
+                        )
 
     return next_obs, next_done, global_step
 
-def update_agent(
-    agent,
-    optimizer,
-    args,
-    b_obs,
-    b_actions,
-    b_logprobs,
-    b_advantages,
-    b_returns,
-):
+def update_agent(agent, optimizer, batch, args,):
     b_inds = np.arange(args.batch_size)
 
     for epoch in range(args.update_epochs):
@@ -245,14 +233,14 @@ def update_agent(
             mb_inds = b_inds[start:end]
 
             _, newlogprob, entropy, newvalue = agent.get_value_and_action(
-                b_obs[mb_inds],
-                b_actions.long()[mb_inds], #long perché Categorical voule indici int64
+                batch.obs[mb_inds],
+                batch.actions.long()[mb_inds], #long perché Categorical voule indici int64
             )
 
-            logratio = newlogprob - b_logprobs[mb_inds]
+            logratio = newlogprob - batch.logprobs[mb_inds]
             ratio = logratio.exp()
 
-            mb_advantages = b_advantages[mb_inds]
+            mb_advantages = batch.advantages[mb_inds]
             if args.norm_adv:
                 mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)#per evitare di dividere per zero
 
@@ -263,7 +251,7 @@ def update_agent(
             pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
             newvalue = newvalue.view(-1)
-            v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
+            v_loss = 0.5 * ((newvalue - batch.returns[mb_inds]) ** 2).mean()
 
             entropy_loss = entropy.mean()
 
@@ -272,18 +260,50 @@ def update_agent(
             optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
-            optimizer.step()   
+            optimizer.step()
+    
+    #ritorna loss dell'ultima epoca di aggiornamento e dell'ultimo minibatch
+    return {"policy_loss": pg_loss.item(), "value_loss": v_loss.item(), "entropy_loss": entropy_loss.item(),}
+
+@dataclass
+class PPOBatch:
+    obs: torch.Tensor
+    actions: torch.Tensor
+    logprobs: torch.Tensor
+    advantages: torch.Tensor
+    returns: torch.Tensor
+    values: torch.Tensor
+
+@dataclass
+class RolloutBuffer:
+    obs: torch.Tensor
+    actions: torch.Tensor
+    logprobs: torch.Tensor
+    rewards: torch.Tensor
+    dones: torch.Tensor
+    values: torch.Tensor
+
+    # flatten the batch dim del batch = num_steps * num envs
+    def to_batch(self, advantages: torch.Tensor, returns: torch.Tensor,) -> PPOBatch:
+        return PPOBatch(
+            obs=self.obs.reshape((-1,) + self.obs.shape[2:]),
+            actions=self.actions.reshape((-1,) + self.actions.shape[2:]),
+            logprobs=self.logprobs.reshape(-1),
+            advantages=advantages.reshape(-1),
+            returns=returns.reshape(-1),
+        )
+
+
+
 
 def main():
     args = parse_args()
     run_name = f"{args.gym_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     if args.track:
-        import wandb
 
         wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
-            sync_tensorboard=True,
             config=vars(args),
             name=run_name,
             monitor_gym=True,
@@ -308,17 +328,20 @@ def main():
     optimizer = torch.optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
-    obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device) #torch.Size([128, 8, 3, 96, 96])
-    actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)#torch.Size([128, 8])
-    logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device) #torch.Size([128, 8])
-    rewards = torch.zeros((args.num_steps, args.num_envs)).to(device) #torch.Size([128, 8])
-    dones = torch.zeros((args.num_steps, args.num_envs)).to(device) #torch.Size([128, 8])
-    values = torch.zeros((args.num_steps, args.num_envs)).to(device)#torch.Size([128, 8])
+    buffer = RolloutBuffer(
+        obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device), #torch.Size([128, 8, 3, 96, 96])
+        actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device), #torch.Size([128, 8])
+        logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device),  #torch.Size([128, 8])
+        rewards = torch.zeros((args.num_steps, args.num_envs)).to(device),  #torch.Size([128, 8])
+        dones = torch.zeros((args.num_steps, args.num_envs)).to(device), #torch.Size([128, 8])
+        values = torch.zeros((args.num_steps, args.num_envs)).to(device), #torch.Size([128, 8])
+    )
+    
   
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
-    next_obs, info = envs.reset()
+    next_obs, _ = envs.reset()
     next_obs = torch.Tensor(next_obs).to(device) #torch.Size([8, 3, 96, 96])
     next_done = torch.zeros(args.num_envs).to(device) #torch.Size([8])
     num_updates = args.total_timesteps // args.batch_size #9765
@@ -334,68 +357,35 @@ def main():
         next_obs, next_done, global_step = collect_rollout(
             envs= envs,
             agent= agent,
-            args= args,
-            device= device,
+            buffer= buffer,
             next_obs= next_obs,
             next_done= next_done,
-            obs= obs,
-            actions= actions,
-            logprobs= logprobs,
-            rewards= rewards,
-            dones= dones,
-            values= values,
             global_step= global_step,
-        )
-
-        advantages = compute_advantages(
-                agent= agent,
-                rewards= rewards, 
-                values= values, 
-                dones= dones, 
-                next_done= next_done, 
-                next_obs= next_obs, 
-                args= args,
-                device= device,
-            )   
-
-        # flatten the batch dim del batch = num_steps * num envs
-        b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
-        b_logprobs = logprobs.reshape(-1)
-        b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
-        b_advantages = advantages.reshape(-1)
-        b_returns = returns.reshape(-1)
-        b_values = values.reshape(-1)  
-      
-
-        # Optimizing the policy and value network
-        update_agent(
-            agent= agent,
-            optimizer= optimizer,
             args= args,
-            b_obs= b_obs,
-            b_actions= b_actions,
-            b_logprobs= b_logprobs,
-            b_advantages= b_advantages,
-            b_returns= b_returns,
+            device= device,
         )
-        
-        y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
-        var_y = np.var(y_true)
-        explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
-        # TRY NOT TO MODIFY: record rewards for plotting purposes
-        writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
-        writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
-        writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
-        writer.add_scalar("losses/entropy", entropy_loss.item(), global_step)
-        writer.add_scalar("losses/old_approx_kl", old_approx_kl.item(), global_step)
-        writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
-        writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
-        writer.add_scalar("losses/explained_variance", explained_var, global_step)
-        print("SPS:", int(global_step / (time.time() - start_time)))
-        writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+        advantages, returns = compute_advantages(agent= agent, buffer= buffer, next_done= next_done, next_obs= next_obs, args= args,)   
 
-   
+        batch = buffer.to_batch(advantages= advantages, returns= returns)
+      
+        # Optimizing the policy and value network
+        metrics= update_agent(agent= agent, optimizer= optimizer, batch= batch, args= args,)
+
+        sps = int(global_step / (time.time() - start_time))
+
+        if args.track:
+            wandb.log(
+                {
+                    "learning_rate": optimizer.param_groups[0]["lr"],
+                    "policy_loss": metrics["policy_loss"],
+                    "value_loss": metrics["value_loss"],
+                    "entropy": metrics["entropy"],
+                    "SPS": sps,
+                },
+                step=global_step,
+            )
+
 
 if __name__ == "__main__":
     main()
