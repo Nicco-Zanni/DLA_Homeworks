@@ -486,8 +486,7 @@ def main():
                 },
                 step=global_step,
             )
-        torch.save(agent.state_dict(), "pesi.pt")
-
+    torch.save(agent.state_dict(), "final_model.pt")
 
 if __name__ == "__main__":
     main()
