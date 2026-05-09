@@ -22,7 +22,7 @@ def parse_args():
         help="the learning rate of the optimizer")
     parser.add_argument("--seed", type=int, default=1,
         help="seed of the experiment")
-    parser.add_argument("--total-timesteps", type=int, default=10000000,
+    parser.add_argument("--total-timesteps", type=int, default=5000000,
         help="total timesteps of the experiments")
     parser.add_argument("--torch-deterministic", action=argparse.BooleanOptionalAction, default=True,
         help="if toggled, `torch.backends.cudnn.deterministic=False`")
@@ -34,13 +34,15 @@ def parse_args():
         help="the wandb's project name")
     parser.add_argument("--wandb-entity", type=str, default=None,
         help="the entity (team) of wandb's project")
-    parser.add_argument("--capture-video", action=argparse.BooleanOptionalAction, default=False,
-        help="weather to capture videos of the agent performances (check out `videos` folder)")
+    parser.add_argument("--save-frequency", type=int, default=100,
+        help="save checkpoint every N updates",)
+    parser.add_argument("--resume", type=str, default=None,
+        help="path to checkpoint")
 
     # Algorithm specific arguments
     parser.add_argument("--num-envs", type=int, default=8,
         help="the number of parallel game environments")
-    parser.add_argument("--num-steps", type=int, default=128,
+    parser.add_argument("--num-steps", type=int, default=1000,
         help="the number of steps to run in each environment per policy rollout")
     parser.add_argument("--anneal-lr", action=argparse.BooleanOptionalAction, default=True,
         help="Toggle learning rate annealing for policy and value networks")
@@ -50,7 +52,7 @@ def parse_args():
         help="the discount factor gamma")
     parser.add_argument("--gae-lambda", type=float, default=0.95,
         help="the lambda for the general advantage estimation")
-    parser.add_argument("--num-minibatches", type=int, default=4,
+    parser.add_argument("--num-minibatches", type=int, default=8,
         help="the number of mini-batches")
     parser.add_argument("--update-epochs", type=int, default=4,
         help="the K epochs to update the policy")
@@ -64,6 +66,8 @@ def parse_args():
         help="coefficient of the value function")
     parser.add_argument("--max-grad-norm", type=float, default=0.5,
         help="the maximum norm for the gradient clipping")
+    parser.add_argument("--target-kl", type=float, default=None,
+        help="the target KL divergence threshold")
     
     args = parser.parse_args()
     args.batch_size = int(args.num_envs * args.num_steps)
@@ -100,20 +104,15 @@ class Agent(nn.Module):
     
     def get_value_and_action(self, x, action=None):
         hidden = self.network(x / 255.0) #immagine normalizzata
-        dist = Categorical(self.actor(hidden))
+        dist = Categorical(logits= self.actor(hidden))
         if action is None:
             action = dist.sample()
         return action, dist.log_prob(action), dist.entropy(), self.critic(hidden)
 
 
-def make_env(gym_id, seed, idx, capture_video, run_name):
+def make_env(gym_id, seed,):
     def thunk():
         env = gym.make(gym_id, continuous=False, render_mode ="rgb_array")
-
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-
-        if capture_video and idx == 0:
-            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
 
         env = gym.wrappers.GrayscaleObservation(env)
         env = gym.wrappers.FrameStackObservation(env, 3)
@@ -138,11 +137,11 @@ def compute_advantages(agent, buffer, next_done, next_obs, args):
                         next_return = next_value
                     else:
                         next_non_terminal = 1.0 - buffer.dones[t + 1]
-                        next_return = buffer.state_values[t + 1]
-                    delta = buffer.rewards[t] + args.gamma * next_return * next_non_terminal - buffer.state_values[t]
+                        next_return = buffer.values[t + 1]
+                    delta = buffer.rewards[t] + args.gamma * next_return * next_non_terminal - buffer.values[t]
                     last_gae = delta + args.gamma * args.gae_lambda * next_non_terminal * last_gae
                     advantages[t] = last_gae
-                returns = advantages + buffer.state_values
+                returns = advantages + buffer.values
             else: #one step advantage
                 returns = torch.zeros_like(buffer.rewards)
                 for t in reversed(range(args.num_steps)):
@@ -153,7 +152,7 @@ def compute_advantages(agent, buffer, next_done, next_obs, args):
                         next_non_terminal = 1.0 - buffer.dones[t + 1]
                         next_return = returns[t + 1]
                     returns[t] = buffer.rewards[t] + args.gamma * next_non_terminal * next_return
-                advantages = returns - buffer.state_values
+                advantages = returns - buffer.values
     return advantages, returns
 
 def ppo():
@@ -180,6 +179,8 @@ def test():
     envs.close()
 
 def collect_rollout(envs, agent, buffer, next_obs, next_done, global_step, args, device,):
+    episodic_returns = []
+    episodic_lengths = []
     for step in range(args.num_steps):
         global_step += args.num_envs
 
@@ -209,25 +210,28 @@ def collect_rollout(envs, agent, buffer, next_obs, next_done, global_step, args,
 
             for i, done in enumerate(done_envs):
                 if done:
-                    print(f"global_step={global_step}, episodic_return={returns[i]}")
-                    print(f"global_step={global_step}, episodic_length={lengths[i]}")
-                    if args.track:
-                        wandb.log(
-                            {
-                                "episodic_return": returns[i],
-                                "episodic_length": lengths[i],
-                            },
-                            step=global_step,
-                        )
+                    episodic_returns.append(returns[i])
+                    episodic_lengths.append(lengths[i])
+    
+    avg_ep_return= np.mean(episodic_returns)
+    avg_ep_length= np.mean(episodic_lengths)
+    print(f"global_step={global_step}, avg_episodic_return={avg_ep_return}")
+    print(f"global_step={global_step}, avg_episodic_length={avg_ep_length}")
 
-    return next_obs, next_done, global_step
+    return next_obs, next_done, global_step, avg_ep_return, avg_ep_length
 
 def update_agent(agent, optimizer, batch, args,):
     b_inds = np.arange(args.batch_size)
+    pg_losses = []
+    v_losses = []
+    entropy_losses = []
+    total_losses = []
 
+    approx_kls = []
+    clipfracs = []
     for epoch in range(args.update_epochs):
         np.random.shuffle(b_inds)
-
+        epoch_kls = []
         for start in range(0, args.batch_size, args.minibatch_size):
             end = start + args.minibatch_size
             mb_inds = b_inds[start:end]
@@ -239,6 +243,13 @@ def update_agent(agent, optimizer, batch, args,):
 
             logratio = newlogprob - batch.logprobs[mb_inds]
             ratio = logratio.exp()
+
+            with torch.no_grad():
+                    # calculate approx_kl http://joschu.net/blog/kl-approx.html
+                    approx_kl = ((ratio - 1) - logratio).mean()
+                    clipfracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean().item()]
+                    epoch_kls.append(approx_kl.item())
+
 
             mb_advantages = batch.advantages[mb_inds]
             if args.norm_adv:
@@ -261,9 +272,26 @@ def update_agent(agent, optimizer, batch, args,):
             loss.backward()
             nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
             optimizer.step()
+
+            pg_losses.append(pg_loss.item())
+            v_losses.append(v_loss.item())
+            entropy_losses.append(entropy_loss.item())
+            total_losses.append(loss.item())
+
+            approx_kls.append(approx_kl.item())
+        
+        mean_kl = np.mean(epoch_kls)
+        if args.target_kl is not None:
+                if mean_kl > args.target_kl:
+                    break
     
+    y_pred, y_true = batch.values.cpu().numpy(), batch.returns.cpu().numpy()
+    var_y = np.var(y_true)
+    explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
     #ritorna loss dell'ultima epoca di aggiornamento e dell'ultimo minibatch
-    return {"policy_loss": pg_loss.item(), "value_loss": v_loss.item(), "entropy_loss": entropy_loss.item(),}
+    return {"policy_loss": np.mean(pg_losses), "value_loss": np.mean(v_losses), "entropy_loss": np.mean(entropy_losses),
+            "total_loss": np.mean(total_losses), "approx_kl": np.mean(approx_kls),"clipfrac": np.mean(clipfracs),
+            "explained_var": explained_var,}
 
 @dataclass
 class PPOBatch:
@@ -291,26 +319,10 @@ class RolloutBuffer:
             logprobs=self.logprobs.reshape(-1),
             advantages=advantages.reshape(-1),
             returns=returns.reshape(-1),
+            values=self.values.reshape(-1)
         )
 
-
-
-
-def main():
-    args = parse_args()
-    run_name = f"{args.gym_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
-    if args.track:
-
-        wandb.init(
-            project=args.wandb_project_name,
-            entity=args.wandb_entity,
-            config=vars(args),
-            name=run_name,
-            monitor_gym=True,
-            save_code=True,
-        )
-    
-
+def setup(args):
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -320,7 +332,7 @@ def main():
 
     # env setup
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.gym_id, args.seed + i, i, args.capture_video, args.exp_name) for i in range(args.num_envs)]
+        [make_env(args.gym_id, args.seed + i,) for i in range(args.num_envs)]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
@@ -336,25 +348,84 @@ def main():
         dones = torch.zeros((args.num_steps, args.num_envs)).to(device), #torch.Size([128, 8])
         values = torch.zeros((args.num_steps, args.num_envs)).to(device), #torch.Size([128, 8])
     )
+
+    return envs, agent, optimizer, buffer, device
+
+
+def save_checkpoint(agent, optimizer, global_step, update, args, path,):
+    checkpoint = {
+        "model_state_dict": agent.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+
+        "global_step": global_step,
+        "update": update,
+
+        "args": vars(args),
+    }
+
+    torch.save(checkpoint, path)
+
+def load_checkpoint(path, agent, optimizer, device):
+    checkpoint = torch.load(path, map_location=device)
+
+    agent.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+    global_step = checkpoint["global_step"]
+    update = checkpoint["update"]
+
+    print(f"Loaded checkpoint from {path}")
+
+    return global_step, update
+
+def main():
+    args = parse_args()
+    run_name = f"{args.gym_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    checkpoint_dir = f"checkpoints/{run_name}"
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
+    if args.track:
+
+        wandb.init(
+            project=args.wandb_project_name,
+            entity=args.wandb_entity,
+            config=vars(args),
+            name=run_name,
+            monitor_gym=True,
+            save_code=True,
+        )
+    
+    
+    envs, agent, optimizer, buffer, device = setup(args)
     
   
     # TRY NOT TO MODIFY: start the game
+    start_update = 1
     global_step = 0
-    start_time = time.time()
     next_obs, _ = envs.reset()
     next_obs = torch.Tensor(next_obs).to(device) #torch.Size([8, 3, 96, 96])
     next_done = torch.zeros(args.num_envs).to(device) #torch.Size([8])
     num_updates = args.total_timesteps // args.batch_size #9765
 
-    
-    for update in range(1, num_updates + 1):
+    if args.resume is not None:
+        global_step, start_update = load_checkpoint(
+            args.resume,
+            agent,
+            optimizer,
+            device,
+        )
+
+        start_update += 1
+
+    best_return = -np.inf
+    for update in range(start_update, num_updates + 1):
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
             frac = 1.0 - (update - 1.0) / num_updates
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
 
-        next_obs, next_done, global_step = collect_rollout(
+        next_obs, next_done, global_step, avg_ep_ret, avg_ep_len = collect_rollout(
             envs= envs,
             agent= agent,
             buffer= buffer,
@@ -365,6 +436,23 @@ def main():
             device= device,
         )
 
+        if args.track:
+            wandb.log({"avg_episodic_return": avg_ep_ret, "avg_episodic_length": avg_ep_len,}, step=global_step,)
+
+        if avg_ep_ret > best_return:
+            best_return = avg_ep_ret
+
+        best_path = os.path.join(checkpoint_dir, "best_model.pt")
+
+        save_checkpoint(
+            agent=agent,
+            optimizer=optimizer,
+            global_step=global_step,
+            update=update,
+            args=args,
+            path=best_path,
+        )
+
         advantages, returns = compute_advantages(agent= agent, buffer= buffer, next_done= next_done, next_obs= next_obs, args= args,)   
 
         batch = buffer.to_batch(advantages= advantages, returns= returns)
@@ -372,7 +460,18 @@ def main():
         # Optimizing the policy and value network
         metrics= update_agent(agent= agent, optimizer= optimizer, batch= batch, args= args,)
 
-        sps = int(global_step / (time.time() - start_time))
+        if update % args.save_frequency == 0:
+            checkpoint_path = os.path.join( checkpoint_dir,f"checkpoint_{update}.pt")
+
+            save_checkpoint(
+                agent=agent,
+                optimizer=optimizer,
+                global_step=global_step,
+                update=update,
+                args=args,
+                path=checkpoint_path,
+            )
+
 
         if args.track:
             wandb.log(
@@ -380,11 +479,15 @@ def main():
                     "learning_rate": optimizer.param_groups[0]["lr"],
                     "policy_loss": metrics["policy_loss"],
                     "value_loss": metrics["value_loss"],
-                    "entropy": metrics["entropy"],
-                    "SPS": sps,
+                    "entropy_loss": metrics["entropy_loss"],
+                    "total_loss": metrics["total_loss"],
+                    "approx_kl": metrics["approx_kl"],
+                    "clipfrac": metrics["clipfrac"],
+                    "explained_variance": metrics["explained_var"]
                 },
                 step=global_step,
             )
+        torch.save(agent.state_dict(), "pesi.pt")
 
 
 if __name__ == "__main__":
