@@ -22,7 +22,7 @@ def parse_args():
         help="the learning rate of the optimizer")
     parser.add_argument("--seed", type=int, default=1,
         help="seed of the experiment")
-    parser.add_argument("--total-timesteps", type=int, default=5000000,
+    parser.add_argument("--total-timesteps", type=int, default=10000000,
         help="total timesteps of the experiments")
     parser.add_argument("--torch-deterministic", action=argparse.BooleanOptionalAction, default=True,
         help="if toggled, `torch.backends.cudnn.deterministic=False`")
@@ -56,7 +56,7 @@ def parse_args():
         help="the number of mini-batches")
     parser.add_argument("--update-epochs", type=int, default=4,
         help="the K epochs to update the policy")
-    parser.add_argument("--norm-adv", action=argparse.BooleanOptionalAction,
+    parser.add_argument("--norm-adv", action=argparse.BooleanOptionalAction, default=True,
         help="Toggles advantages normalization")
     parser.add_argument("--clip-coef", type=float, default=0.1,
         help="the surrogate clipping coefficient")
@@ -439,20 +439,6 @@ def main():
         if args.track:
             wandb.log({"avg_episodic_return": avg_ep_ret, "avg_episodic_length": avg_ep_len,}, step=global_step,)
 
-        if avg_ep_ret > best_return:
-            best_return = avg_ep_ret
-
-        best_path = os.path.join(checkpoint_dir, "best_model.pt")
-
-        save_checkpoint(
-            agent=agent,
-            optimizer=optimizer,
-            global_step=global_step,
-            update=update,
-            args=args,
-            path=best_path,
-        )
-
         advantages, returns = compute_advantages(agent= agent, buffer= buffer, next_done= next_done, next_obs= next_obs, args= args,)   
 
         batch = buffer.to_batch(advantages= advantages, returns= returns)
@@ -472,6 +458,19 @@ def main():
                 path=checkpoint_path,
             )
 
+        if avg_ep_ret > best_return:
+            best_return = avg_ep_ret
+
+            best_path = os.path.join(checkpoint_dir, "best_model.pt")
+
+            save_checkpoint(
+                agent=agent,
+                optimizer=optimizer,
+                global_step=global_step,
+                update=update,
+                args=args,
+                path=best_path,
+            )
 
         if args.track:
             wandb.log(
