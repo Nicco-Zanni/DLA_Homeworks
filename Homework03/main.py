@@ -22,7 +22,7 @@ def parse_args():
         help="the learning rate of the optimizer")
     parser.add_argument("--seed", type=int, default=1,
         help="seed of the experiment")
-    parser.add_argument("--total-timesteps", type=int, default=10000000,
+    parser.add_argument("--total-timesteps", type=int, default=5000000,
         help="total timesteps of the experiments")
     parser.add_argument("--torch-deterministic", action=argparse.BooleanOptionalAction, default=True,
         help="if toggled, `torch.backends.cudnn.deterministic=False`")
@@ -34,15 +34,17 @@ def parse_args():
         help="the wandb's project name")
     parser.add_argument("--wandb-entity", type=str, default=None,
         help="the entity (team) of wandb's project")
-    parser.add_argument("--save-frequency", type=int, default=100,
+    parser.add_argument("--save-frequency", type=int, default=50,
         help="save checkpoint every N updates",)
     parser.add_argument("--resume", type=str, default=None,
         help="path to checkpoint")
+    parser.add_argument("--capture-video", action=argparse.BooleanOptionalAction, default=False,
+        help="weather to capture videos of the agent performances (check out `videos` folder)")
 
     # Algorithm specific arguments
     parser.add_argument("--num-envs", type=int, default=8,
         help="the number of parallel game environments")
-    parser.add_argument("--num-steps", type=int, default=1000,
+    parser.add_argument("--num-steps", type=int, default=1024,
         help="the number of steps to run in each environment per policy rollout")
     parser.add_argument("--anneal-lr", action=argparse.BooleanOptionalAction, default=True,
         help="Toggle learning rate annealing for policy and value networks")
@@ -58,7 +60,7 @@ def parse_args():
         help="the K epochs to update the policy")
     parser.add_argument("--norm-adv", action=argparse.BooleanOptionalAction, default=True,
         help="Toggles advantages normalization")
-    parser.add_argument("--clip-coef", type=float, default=0.1,
+    parser.add_argument("--clip-coef", type=float, default=0.2,
         help="the surrogate clipping coefficient")
     parser.add_argument("--ent-coef", type=float, default=0.01,
         help="coefficient of the entropy")
@@ -66,7 +68,7 @@ def parse_args():
         help="coefficient of the value function")
     parser.add_argument("--max-grad-norm", type=float, default=0.5,
         help="the maximum norm for the gradient clipping")
-    parser.add_argument("--target-kl", type=float, default=None,
+    parser.add_argument("--target-kl", type=float, default=0.015,
         help="the target KL divergence threshold")
     
     args = parser.parse_args()
@@ -81,22 +83,21 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     return layer
 
 class Agent(nn.Module):
-    def __init__(self, envs, frame_stack_num=3):
+    def __init__(self, envs, frame_stack_num=4):
         super().__init__()
         self.network = nn.Sequential(
-            layer_init(nn.Conv2d(in_channels=frame_stack_num, out_channels=6, kernel_size=7, stride=3)),
+            layer_init(nn.Conv2d(in_channels=frame_stack_num, out_channels=32, kernel_size=8, stride=4)),
+            nn.ReLU(),  
+            layer_init(nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2)),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            
-            layer_init(nn.Conv2d(in_channels=6, out_channels=12, kernel_size=4, stride=1)),
+            layer_init(nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1)),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),
             nn.Flatten(),
-            layer_init(nn.Linear(in_features= 12 * 6 * 6, out_features=216)),
+            layer_init(nn.Linear(in_features= 64 * 7 * 7, out_features=512)),
             nn.ReLU(),
         )
-        self.actor = layer_init(nn.Linear(216, envs.single_action_space.n), std=0.01)
-        self.critic = layer_init(nn.Linear(216, 1), std=1)
+        self.actor = layer_init(nn.Linear(512, envs.single_action_space.n), std=0.01)
+        self.critic = layer_init(nn.Linear(512, 1), std=1)
 
     def get_value(self, x):
         #immagine normalizzata tra 0 e 1
@@ -110,12 +111,17 @@ class Agent(nn.Module):
         return action, dist.log_prob(action), dist.entropy(), self.critic(hidden)
 
 
-def make_env(gym_id, seed,):
+def make_env(gym_id, seed, idx, capture_video, run_name):
     def thunk():
-        env = gym.make(gym_id, continuous=False, render_mode ="rgb_array")
-
+        env = gym.make(gym_id, continuous=False,)
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+        if capture_video:
+            if idx == 0:
+                env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
+        env = gym.wrappers.TransformObservation(env, lambda obs: obs[:84, :, :])
+        env = gym.wrappers.ResizeObservation(env, (84, 84))
         env = gym.wrappers.GrayscaleObservation(env)
-        env = gym.wrappers.FrameStackObservation(env, 3)
+        env = gym.wrappers.FrameStackObservation(env, 4)
 
         env.reset(seed=seed)
         env.action_space.seed(seed)
@@ -322,7 +328,7 @@ class RolloutBuffer:
             values=self.values.reshape(-1)
         )
 
-def setup(args):
+def setup(args, run_name):
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -332,7 +338,7 @@ def setup(args):
 
     # env setup
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.gym_id, args.seed + i,) for i in range(args.num_envs)]
+        [make_env(args.gym_id, args.seed + i,i, True, run_name) for i in range(args.num_envs)]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
@@ -396,7 +402,8 @@ def main():
         )
     
     
-    envs, agent, optimizer, buffer, device = setup(args)
+    envs, agent, optimizer, buffer, device = setup(args, run_name)
+    print(device)
     
   
     # TRY NOT TO MODIFY: start the game
