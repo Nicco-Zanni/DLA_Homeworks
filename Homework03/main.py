@@ -60,7 +60,7 @@ def parse_args():
         help="the K epochs to update the policy")
     parser.add_argument("--norm-adv", action=argparse.BooleanOptionalAction, default=True,
         help="Toggles advantages normalization")
-    parser.add_argument("--clip-coef", type=float, default=0.2,
+    parser.add_argument("--clip-coef", type=float, default=0.1,
         help="the surrogate clipping coefficient")
     parser.add_argument("--ent-coef", type=float, default=0.01,
         help="coefficient of the entropy")
@@ -110,15 +110,30 @@ class Agent(nn.Module):
             action = dist.sample()
         return action, dist.log_prob(action), dist.entropy(), self.critic(hidden)
 
+class ClipRewardCarRacing(gym.RewardWrapper):
+    def __init__(self, env, max_reward=1.0):
+        super().__init__(env)
+        self.max_reward = max_reward
 
-def make_env(gym_id, seed, idx, capture_video, run_name):
+    def reward(self, reward):
+        # Mantiene inalterate le penalità (valori negativi), ma taglia i picchi positivi
+        return np.clip(reward, a_max=self.max_reward)
+    
+def make_env(gym_id, seed, idx, capture_video, run_name,):
     def thunk():
         env = gym.make(gym_id, continuous=False,)
+        env = ClipRewardCarRacing(env)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         if capture_video:
             if idx == 0:
                 env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
-        env = gym.wrappers.TransformObservation(env, lambda obs: obs[:84, :, :])
+        new_obs_space = gym.spaces.Box(
+            low=0,
+            high=255,
+            shape=(84, env.observation_space.shape[1], env.observation_space.shape[2]),
+            dtype=np.uint8
+)
+        env = gym.wrappers.TransformObservation(env, lambda obs: obs[:84, :, :], observation_space=new_obs_space)
         env = gym.wrappers.ResizeObservation(env, (84, 84))
         env = gym.wrappers.GrayscaleObservation(env)
         env = gym.wrappers.FrameStackObservation(env, 4)
@@ -338,7 +353,7 @@ def setup(args, run_name):
 
     # env setup
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.gym_id, args.seed + i,i, True, run_name) for i in range(args.num_envs)]
+        [make_env(args.gym_id, args.seed + i,i, args.capture_video, run_name) for i in range(args.num_envs)]
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 

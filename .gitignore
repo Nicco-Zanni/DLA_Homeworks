@@ -6,3 +6,5 @@ __pycache__/
 *.pth
 .env
 results/
+checkpoints/
+videos/
