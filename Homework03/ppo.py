@@ -1,18 +1,17 @@
 import gymnasium as gym
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 import wandb
 import os
 import argparse
 import random
-import time
-from torch.distributions import Categorical
 from dataclasses import dataclass
+from agent import Agent
+from car_race import make_vec_envs
 
 def parse_args():
-    # fmt: off
+  
     parser = argparse.ArgumentParser()
     parser.add_argument("--exp-name", type=str, default=os.path.basename(__file__).rstrip(".py"),
         help="the name of this experiment")
@@ -39,7 +38,7 @@ def parse_args():
     parser.add_argument("--resume", type=str, default=None,
         help="path to checkpoint")
     parser.add_argument("--capture-video", action=argparse.BooleanOptionalAction, default=False,
-        help="weather to capture videos of the agent performances (check out `videos` folder)")
+        help="weather to capture videos of the agent performances")
 
     # Algorithm specific arguments
     parser.add_argument("--num-envs", type=int, default=8,
@@ -70,81 +69,18 @@ def parse_args():
         help="the maximum norm for the gradient clipping")
     parser.add_argument("--target-kl", type=float, default=0.015,
         help="the target KL divergence threshold")
+    parser.add_argument("--render-mode", type=str, default=None, choices=["human", "rgb_array", None],
+        help="gymnasium render mode")
+    parser.add_argument("--reward-clip", type=float, default=None,
+        help="upper bound for reward clipping; if None no clipping is applied")
     
     args = parser.parse_args()
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
-    # fmt: on
+    if args.render_mode is None:
+        args.capture_video = False
+  
     return args
-
-def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
-    torch.nn.init.orthogonal_(layer.weight, std)
-    torch.nn.init.constant_(layer.bias, bias_const)
-    return layer
-
-class Agent(nn.Module):
-    def __init__(self, envs, frame_stack_num=4):
-        super().__init__()
-        self.network = nn.Sequential(
-            layer_init(nn.Conv2d(in_channels=frame_stack_num, out_channels=32, kernel_size=8, stride=4)),
-            nn.ReLU(),  
-            layer_init(nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2)),
-            nn.ReLU(),
-            layer_init(nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1)),
-            nn.ReLU(),
-            nn.Flatten(),
-            layer_init(nn.Linear(in_features= 64 * 7 * 7, out_features=512)),
-            nn.ReLU(),
-        )
-        self.actor = layer_init(nn.Linear(512, envs.single_action_space.n), std=0.01)
-        self.critic = layer_init(nn.Linear(512, 1), std=1)
-
-    def get_value(self, x):
-        #immagine normalizzata tra 0 e 1
-        return self.critic(self.network(x / 255.0))
-    
-    def get_value_and_action(self, x, action=None):
-        hidden = self.network(x / 255.0) #immagine normalizzata
-        dist = Categorical(logits= self.actor(hidden))
-        if action is None:
-            action = dist.sample()
-        return action, dist.log_prob(action), dist.entropy(), self.critic(hidden)
-
-class ClipRewardCarRacing(gym.RewardWrapper):
-    def __init__(self, env, max_reward=1.0):
-        super().__init__(env)
-        self.max_reward = max_reward
-
-    def reward(self, reward):
-        # Mantiene inalterate le penalità (valori negativi), ma taglia i picchi positivi
-        return np.clip(reward, a_max=self.max_reward)
-    
-def make_env(gym_id, seed, idx, capture_video, run_name,):
-    def thunk():
-        env = gym.make(gym_id, continuous=False,)
-        env = ClipRewardCarRacing(env)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        if capture_video:
-            if idx == 0:
-                env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
-        new_obs_space = gym.spaces.Box(
-            low=0,
-            high=255,
-            shape=(84, env.observation_space.shape[1], env.observation_space.shape[2]),
-            dtype=np.uint8
-)
-        env = gym.wrappers.TransformObservation(env, lambda obs: obs[:84, :, :], observation_space=new_obs_space)
-        env = gym.wrappers.ResizeObservation(env, (84, 84))
-        env = gym.wrappers.GrayscaleObservation(env)
-        env = gym.wrappers.FrameStackObservation(env, 4)
-
-        env.reset(seed=seed)
-        env.action_space.seed(seed)
-        env.observation_space.seed(seed)
-
-        return env
-
-    return thunk
 
 def compute_advantages(agent, buffer, next_done, next_obs, args):
     with torch.no_grad():
@@ -176,29 +112,6 @@ def compute_advantages(agent, buffer, next_done, next_obs, args):
                 advantages = returns - buffer.values
     return advantages, returns
 
-def ppo():
-    print("hello")
-
-def test():
-    envs = gym.vector.SyncVectorEnv(
-        [make_env("CarRacing-v3", 1234 + i, i, True, "test") for i in range(2)]
-    )
-    obs = envs.reset()
-    for i in range(100):
-        print(i)
-        action = envs.action_space.sample()
-        obs, reward, term, trunc, info = envs.step(action)
-        print(type(obs))
-        if "episode" in info:
-            done_envs = info["_episode"]
-            returns = info["episode"]["r"]
-
-            for i, done in enumerate(done_envs):
-                if done:
-                    print(f"env {i} episodic return {returns[i]}")
-    
-    envs.close()
-
 def collect_rollout(envs, agent, buffer, next_obs, next_done, global_step, args, device,):
     episodic_returns = []
     episodic_lengths = []
@@ -223,7 +136,6 @@ def collect_rollout(envs, agent, buffer, next_obs, next_done, global_step, args,
         next_obs = torch.Tensor(next_obs).to(device)
         next_done = torch.Tensor(done).to(device)
 
-        # logging episodi (lo lasciamo qui per ora)
         if "episode" in info:
             done_envs = info["_episode"]
             returns = info["episode"]["r"]
@@ -271,7 +183,6 @@ def update_agent(agent, optimizer, batch, args,):
                     clipfracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean().item()]
                     epoch_kls.append(approx_kl.item())
 
-
             mb_advantages = batch.advantages[mb_inds]
             if args.norm_adv:
                 mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)#per evitare di dividere per zero
@@ -309,7 +220,7 @@ def update_agent(agent, optimizer, batch, args,):
     y_pred, y_true = batch.values.cpu().numpy(), batch.returns.cpu().numpy()
     var_y = np.var(y_true)
     explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
-    #ritorna loss dell'ultima epoca di aggiornamento e dell'ultimo minibatch
+    
     return {"policy_loss": np.mean(pg_losses), "value_loss": np.mean(v_losses), "entropy_loss": np.mean(entropy_losses),
             "total_loss": np.mean(total_losses), "approx_kl": np.mean(approx_kls),"clipfrac": np.mean(clipfracs),
             "explained_var": explained_var,}
@@ -352,9 +263,7 @@ def setup(args, run_name):
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # env setup
-    envs = gym.vector.SyncVectorEnv(
-        [make_env(args.gym_id, args.seed + i,i, args.capture_video, run_name) for i in range(args.num_envs)]
-    )
+    envs = make_vec_envs(args.num_envs,args.gym_id, args.seed, args.render_mode, args.capture_video, args.reward_clip, run_name)
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
     agent = Agent(envs).to(device)
@@ -371,7 +280,6 @@ def setup(args, run_name):
     )
 
     return envs, agent, optimizer, buffer, device
-
 
 def save_checkpoint(agent, optimizer, global_step, update, args, path,):
     checkpoint = {
@@ -401,7 +309,7 @@ def load_checkpoint(path, agent, optimizer, device):
 
 def main():
     args = parse_args()
-    run_name = f"{args.gym_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    run_name = f"{args.gym_id}__{args.exp_name}"
     checkpoint_dir = f"checkpoints/{run_name}"
     os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -416,12 +324,8 @@ def main():
             save_code=True,
         )
     
-    
     envs, agent, optimizer, buffer, device = setup(args, run_name)
-    print(device)
     
-  
-    # TRY NOT TO MODIFY: start the game
     start_update = 1
     global_step = 0
     next_obs, _ = envs.reset()
@@ -508,7 +412,15 @@ def main():
                 },
                 step=global_step,
             )
-    torch.save(agent.state_dict(), "final_model.pt")
+    checkpoint_path = os.path.join( checkpoint_dir,f"final_model.pt")
+    save_checkpoint(
+                agent=agent,
+                optimizer=optimizer,
+                global_step=global_step,
+                update=num_updates,
+                args=args,
+                path=checkpoint_path,
+            )
 
 if __name__ == "__main__":
     main()
