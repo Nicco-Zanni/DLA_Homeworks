@@ -177,7 +177,7 @@ def update_agent(agent, optimizer, batch, args,):
             logratio = newlogprob - batch.logprobs[mb_inds]
             ratio = logratio.exp()
 
-            with torch.no_grad():
+            with torch.no_grad():#sono metriche non serve il computattion graph
                     # calculate approx_kl http://joschu.net/blog/kl-approx.html
                     approx_kl = ((ratio - 1) - logratio).mean()
                     clipfracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean().item()]

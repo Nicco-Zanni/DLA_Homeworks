@@ -1,14 +1,14 @@
-import gymnasium as gym
 import torch
 import numpy as np
 import argparse
+import os
 from agent import Agent
 from car_race import make_vec_envs
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--video-folder", type=str, default=None,
-        help="the name of this experiment")
+        help="the folder in which to save the videos")
     parser.add_argument("--gym-id", type=str, default="CarRacing-v3",
         help="the id of the gym environment")
     parser.add_argument("--seed", type=int, default=1234,
@@ -38,7 +38,7 @@ def main():
     envs = make_vec_envs(
         num_envs= args.num_envs,
         gym_id= args.gym_id, 
-        seed= args.seed + i,
+        seed= args.seed,
         render_mode= args.render_mode,
         capture_video= args.capture_video,
         clip_reward=None,
@@ -83,6 +83,31 @@ def main():
     print(f"Min return: {min_return:.2f}")
     print(f"Max return: {max_return:.2f}")
     print(f"Success rate (>900): {success_rate * 100:.2f}%")
+
+    results_dir = "agents_performances"
+    os.makedirs(results_dir, exist_ok=True)
+    model_path = args.model_path
+
+    model_name = os.path.splitext(os.path.basename(model_path))[0]
+    exp_name = os.path.basename(os.path.dirname(model_path))
+
+    results_file = os.path.join(results_dir,f"{exp_name}_{model_name}.txt")
+    
+    # Salvataggio metriche
+    with open(results_file, "w") as f:
+        f.write(f"Model path: {args.model_path}\n")
+        f.write(f"Environment: {args.gym_id}\n")
+        f.write(f"Seed: {args.seed}\n")
+        f.write(f"Number of episodes: {args.num_episodes}\n")
+        f.write(f"Number of envs: {args.num_envs}\n\n")
+
+        f.write(f"Mean return: {mean_return:.2f}\n")
+        f.write(f"Std return: {std_return:.2f}\n")
+        f.write(f"Min return: {min_return:.2f}\n")
+        f.write(f"Max return: {max_return:.2f}\n")
+        f.write(f"Success rate (>900): {success_rate * 100:.2f}%\n")
+
+    print(f"\nResults saved to {results_file}")
 
 if __name__ == "__main__":
     main()
