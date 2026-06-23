@@ -20,6 +20,11 @@ def parse_args():
 
 def compute_embeddings(ds, model, processor, device, batch_size= 64):
 
+    """
+    Saves the ds passed in data/images, computes the images embeddings of the images using the model passed.
+    Then saves the images pathsand the normalized embeddings in a pt file in data
+    """
+
     os.makedirs("data/images", exist_ok=True)
 
     image_paths = []

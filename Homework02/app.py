@@ -12,7 +12,13 @@ def parse_args():
     return parser.parse_args()
 
 class ImageRetrievalApp:
+    """
+    This class defines the Gradio UI and application logic
+    """
     def __init__(self, features_path: str, model_name: str):
+        """
+        Load the model and the dataset in memory
+        """
         
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model_name = model_name
@@ -29,7 +35,10 @@ class ImageRetrievalApp:
         self.model.eval()
 
     def search(self, query: str, k: int):
-        
+        """
+        Given a text query calculates the normalized embeddings, calculates the cosine similarity with 
+        every image embeddings and return the k most similar images.
+        """
         if not query.strip():
             return []
 
@@ -52,7 +61,10 @@ class ImageRetrievalApp:
         return gallery_output
 
     def build_ui(self):
-        
+        """
+        Define the Gradio UI as column with 2 rows. In the first row the user formulates the
+        query and selects k. In the second row shows the images
+        """
         with gr.Blocks(title="CLIP Text-to-Image Retrieval") as demo:
             gr.Markdown("# 🔍 CLIP Text-to-Image Retrieval")
             gr.Markdown(f"Active Model in background: `{self.model_name}`")
