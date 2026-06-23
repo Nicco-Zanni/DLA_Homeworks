@@ -7,22 +7,22 @@ from sklearn.metrics import accuracy_score
 
 
 class Logger(ABC):
-    """Interfaccia comune per i logger."""
+    """General interface for the loggers."""
  
     @abstractmethod
     def init(self, config: DictConfig) -> None:
-        """Inizializza il logger."""
+        """Initialize the logger."""
  
     @abstractmethod
     def log(self, metrics: dict, step: int) -> None:
-        """Logga un dizionario di metriche allo step corrente."""
+        """Log a dictionary containing the metrics at the current step."""
  
     @abstractmethod
     def finish(self) -> None:
-        """Chiude la sessione di logging."""
+        """Close the logger session."""
 
 class WandbLogger(Logger):
-    """Logger che scrive su Weights & Biases."""
+    """Weights & Biases logger."""
  
     def __init__(self) -> None:
         self._run = None
@@ -38,19 +38,19 @@ class WandbLogger(Logger):
             name=config.experiment_name,
             config=cfg_dict
         )
-        print(f"[WandbLogger] Run inizializzata: {self._run.url}")
+        print(f"[WandbLogger] Run initialized at: {self._run.url}")
  
     def log(self, metrics: dict, step: int) -> None:
         self._run.log(metrics, step=step)
  
     def finish(self) -> None:
         self._run.finish()
-        print("[WandbLogger] Run chiusa.")
+        print("[WandbLogger] Run closed.")
 
 def unpack_loss(loss_output) -> tuple[torch.Tensor, dict]:
     """
-    La loss output puó essere un tensore scalare oopure un dict che ha la chiave 'total'
-    Ritorna (loss_totale, dict_con_tutte_le_componenti).
+    Loss output can be a sclar tensor or dict with the 'total' key
+    Return (total_loss, dict with all the loss components).
     """
 
     if isinstance(loss_output, dict):
@@ -58,7 +58,7 @@ def unpack_loss(loss_output) -> tuple[torch.Tensor, dict]:
             total = loss_output["total"]
             components = loss_output
         else:
-            # modelli tipo Faster R-CNN che ritornano {"loss_cls": ..., "loss_box": ...}
+            # used by models like Faster R-CNN
             total = sum(loss_output.values())
             components = {**loss_output, "total": total}
     else:
@@ -68,6 +68,9 @@ def unpack_loss(loss_output) -> tuple[torch.Tensor, dict]:
 
 
 class Metric(ABC):
+    """
+    Define the general interface for the metrics.
+    """
     @abstractmethod
     def accumulate(self, out, gts):
         pass
@@ -81,6 +84,9 @@ class Metric(ABC):
         pass
 
 class ClassificationMetric(Metric):
+    """
+    Class that computes the classification metrics.
+    """
     def __init__(self):
         self.preds = []
         self.gts = []
@@ -103,11 +109,12 @@ class ClassificationMetric(Metric):
 
 class ForwardPass(ABC):
     """
-    Astrae il modo in cui si esegue il forward pass e si calcola la loss.
-    Contratto: ritorna sempre (out, loss_result)
-      - out        : predizioni del modello, None se non disponibili (es. training detection)
-      - loss_result: tensore scalare, dict con 'total', dict senza 'total', oppure None in eval
-                     se il modello non calcola la loss internamente
+    Abstracts how the forward pass is executed and the loss is computed.
+
+    Contract: always returns (out, loss_result)
+      - out        : model predictions, None if not availables (es. training detection)
+      - loss_result: scalar tensor, dict with key 'total', dict wo key 'total', or  None during eval
+                     if the model doesn compute the loss internally
     """
     @abstractmethod
     def __call__(self, model, xs, gts) -> tuple:
@@ -116,8 +123,8 @@ class ForwardPass(ABC):
 
 class ExternalLossForward(ForwardPass):
     """
-    Modelli classici: out = model(x), loss = loss_fn(out, gts).
-    Es: classificatori, segmentatori.
+    Classic Models: out = model(x), loss = loss_fn(out, gts).
+    Es: Classifiers.
     """
     def __init__(self, loss_fn):
         self.loss_fn = loss_fn
@@ -131,10 +138,10 @@ class ExternalLossForward(ForwardPass):
 
 class InternalLossForward(ForwardPass):
     """
-    Modelli che calcolano la loss internamente e ritornano un dict di loss in training.
-    Es: Faster R-CNN, DETR, YOLOv5.
-    - Training : model(xs, gts) -> dict di loss  (out non disponibile)
-    - Eval     : model(xs)      -> predizioni     (loss non calcolata)
+    Models that compute the loss internally and return a dict containing the loss during training.
+    Es: Faster R-CNN.
+    - Training : model(xs, gts) -> dict containing the loss  (out non available)
+    - Eval     : model(xs)      -> predictions (loss not computed)
     """
     def __call__(self, model, xs, gts):
         if model.training:
@@ -146,7 +153,7 @@ class InternalLossForward(ForwardPass):
 
 def to_device(data, device):
     """
-    Sposta ricorsivamente i dati sul device (supporta Tensori, Liste e Dizionari).
+    Moves data to the specified device (supports tensors, lists and dictionaries)
     """
     if isinstance(data, torch.Tensor):
         return data.to(device)
@@ -159,10 +166,8 @@ def to_device(data, device):
 def evaluate_and_log(model, dl_val, device, epoch,
                       logger, metrics: Metric, forward_pass: ForwardPass):
     """
-    Esegue il validation loop, raccoglie le metriche e le logga insieme
-    a quelle di training.
-    Metrics é una classe che accumula i risultati dei vari batch e poi calcola 
-    la metriche su tutto il validation set
+    Executes the evaluation loop, computes eval metrics and log them with training metrics.
+    Metrics is a class that first accumulates all the batch results and then computes the metrics on the complete validation set
 
     """
     model.eval()
@@ -206,6 +211,10 @@ def evaluate_and_log(model, dl_val, device, epoch,
 
 
 def train_one_epoch(model, opt, dl_train, device, epoch, logger: Logger, forward_pass: ForwardPass):
+    """
+    Executes a training epoch
+
+    """
     model.train()
     epoch_loss_components = {}
     total_samples = 0
@@ -230,7 +239,7 @@ def train_one_epoch(model, opt, dl_train, device, epoch, logger: Logger, forward
 
         total_samples += batch_size
     
-    # loss medie per questa epoca
+    # average loss for this epoch
     train_losses = {
         k: total / total_samples for k, total in epoch_loss_components.items()
     }
@@ -245,14 +254,13 @@ def train_loop(model, opt, scheduler, dl_train, dl_val, forward_pass: ForwardPas
                 config: DictConfig, logger: Logger, metrics: Metric) -> None:
     
     """
-    Loop di training completo.
+    Complete training loop.
  
-    Parametri estratti da `config`:
-        epochs           -numero di epoche
-        log_every        -ogni quante epoche loggare
-        experiment_name  - nome dell'esperimento
-
-    la loss function deve calcolare la loss sul batch ed usare come reduce mean
+    Parameters extracted from `config`:
+        epochs           -number of epochs
+        log_every        -log every tot epochs
+        experiment_name  - name of the experiment
+    the loss function must compute the loss on the batch and use mean as the reduction
     """
 
     logger.init(config)
@@ -265,7 +273,7 @@ def train_loop(model, opt, scheduler, dl_train, dl_val, forward_pass: ForwardPas
         print(f"Epoch: {epoch}/{epochs}")
         train_one_epoch(model, opt, dl_train, device, epoch, logger, forward_pass)
 
-        #logga ogni log_everyy epoche
+        #logging
         if epoch % log_every == 0:
             evaluate_and_log(
                 model, dl_val, device,
@@ -287,7 +295,3 @@ def save_classification_report(report: str, experiment_name: str,
         f.write(report)
 
     print(f"Report salvato in {path}")
-
-
-
-
