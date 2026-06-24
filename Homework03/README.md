@@ -127,7 +127,7 @@ The evaluation metrics are also saved in the `agents_performances/` directory.
 
 ## Results
 ### Exercises 1 & 2: REINFORCE and Baseline REINFORCE
-In exrcesise 1 and 2 i refactored the implementation of the rienforce algorithm and implemented aversion that uses a network with the same architecture as a baseline. The training parameters used are:
+In exrcesise 1 and 2 I refactored the implementation of the rienforce algorithm and implemented a version that uses a network with the same architecture as a baseline. The training parameters used are:
 
 - optimizer: Adam
 - lr: 1e-2
@@ -148,7 +148,7 @@ The figure below shows the average reward obtained during training using the REI
 
 <img src="../assets/baseline_avg_reward.png" width="600">
 
-Without standardization the agent doesn converge to the maximum reward while the agent trained with the baseline approch converge before that the one that only standardize the returns.
+Without standardization the agent doesn converge to the maximum reward. The agent trained with the baseline approach converges earlier than the one that only standardizes the returns.
 
 ### Exercises 3: PPO on CarRacing
 
@@ -175,7 +175,9 @@ The best training parameters i found  are the following:
 - target KL divergence threshold: 0.15
 - positive reards clipped at: 0.8
 
-The results i Obtained are the following:
+The enviroment is considered solved if the average episodic return over 100 episodes is > 900
+
+The results I obtained are the following:
 - average return: 888.79
 - Std return: 38.44
 - Min return: 705.46
@@ -193,4 +195,5 @@ With reward clipping, the car is less incentivized to drive fast, allowing it to
 ## Information about the use of AI
 I used LLM to develop this laboratory. In particular I used AI to help me code, debug and improve the models performance. I checked the results by looking at the documentation and trying the code in a notebook.
 Here are some chat transcripts:  
+https://chatgpt.com/share/6a3c11de-29ec-83eb-ab84-859fca4d0a01  
 https://chatgpt.com/share/6a3c0fcc-0828-83eb-b868-601238b719a5
