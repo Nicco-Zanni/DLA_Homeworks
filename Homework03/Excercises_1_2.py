@@ -135,7 +135,7 @@ def reinforce(policy, env, N, M, env_render=None, gamma=0.99, num_episodes=10, b
     """
     Simple reinforce algorithm
     Inputs: a policy net, a gymnasium enviroment, log every N episodes, M episodes of evaluation, an enviroment to render during evaluation
-    gamma to compute the rewars, num of train episodes, if baseline = True it standardizes the returns, device to use
+    gamma the discount factor, num of train episodes, if baseline = True it standardizes the returns, device to use
     Returns: a list of running rewards, a list of average rewards and a list of average episode length
     """
     opt = torch.optim.Adam(policy.parameters(), lr=1e-2)
@@ -192,7 +192,7 @@ def baseline_reinforce(policy, state_val_net, env, N, M, env_render=None, gamma=
     """
     Simple reinforce algorithm with baseline
     Inputs: a policy net,a state value net, a gymnasium enviroment, log every N episodes, M episodes of evaluation, 
-    an enviroment to render during evaluation, gamma to compute the rewars, num of train episodes, if baseline = True it standardizes the returns,
+    an enviroment to render during evaluation, gamma the discount factor, num of train episodes, if baseline = True it standardizes the returns,
     the device to use
     Returns: a list of average rewards and a list of average episode length
     """

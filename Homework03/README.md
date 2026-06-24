@@ -127,7 +127,7 @@ The evaluation metrics are also saved in the `agents_performances/` directory.
 
 ## Results
 ### Exercises 1 & 2: REINFORCE and Baseline REINFORCE
-In exrcesise 1 and 2 I refactored the implementation of the rienforce algorithm and implemented a version that uses a network with the same architecture as a baseline. The training parameters used are:
+In exrcesise 1 and 2 I refactored the implementation of the reinforce algorithm and implemented a version that uses a network with the same architecture as a baseline. The training parameters used are:
 
 - optimizer: Adam
 - lr: 1e-2
@@ -140,13 +140,19 @@ The figure below shows the average reward obtained during training using the REI
 
 <img src="../assets/no_std_avg_reward.png" width="600">
 
+The final average reward over 10 episodes was 116.3.
+
 The figure below shows the average reward obtained during training using the REINFORCE algorithm with reward standardization.
 
 <img src="../assets/std_avg_reward.png" width="600">
 
+The final average reward over 10 episodes was 500.
+
 The figure below shows the average reward obtained during training using the REINFORCE algorithm with reward standardization.
 
 <img src="../assets/baseline_avg_reward.png" width="600">
+
+The final average reward over 10 episodes was 500.
 
 Without standardization the agent doesn converge to the maximum reward. The agent trained with the baseline approach converges earlier than the one that only standardizes the returns.
 
