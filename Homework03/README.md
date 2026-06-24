@@ -138,15 +138,15 @@ In exrcesise 1 and 2 i refactored the implementation of the rienforce algorithm 
 
 The figure below shows the average reward obtained during training using the REINFORCE algorithm without reward standardization.
 
-<img src="assets/no_std_avg_reward.png" width="600">
+<img src="../assets/no_std_avg_reward.png" width="600">
 
 The figure below shows the average reward obtained during training using the REINFORCE algorithm with reward standardization.
 
-<img src="assets/std_avg_reward.png" width="600">
+<img src="../assets/std_avg_reward.png" width="600">
 
 The figure below shows the average reward obtained during training using the REINFORCE algorithm with reward standardization.
 
-<img src="assets/baseline_avg_reward.png" width="600">
+<img src="../assets/baseline_avg_reward.png" width="600">
 
 Without standardization the agent doesn converge to the maximum reward while the agent trained with the baseline approch converge before that the one that only standardize the returns.
 
@@ -183,10 +183,10 @@ The results i Obtained are the following:
 - Success rate (>900): 52.00%
 
 This is a video of the best agent playng:  
-<img src="assets/best_ppo.gif" width="600">
+<img src="../assets/best_ppo.gif" width="600">
 
 This is a video of an agent trained without reward clipping:  
-<img src="assets/no_clipping.gif" width="600">
+<img src="../assets/no_clipping.gif" width="600">
 
 With reward clipping, the car is less incentivized to drive fast, allowing it to make sharper turns.
 
