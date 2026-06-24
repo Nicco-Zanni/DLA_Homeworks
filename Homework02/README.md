@@ -65,6 +65,6 @@ Open the URL in your browser to access the application.
 ## Information about the use of AI
 I used LLM to develop this laboratory. In particular I used AI to help me code, debug and improve the models performance. I checked the results by looking at the documentation and trying the code in a notebook.
 Here are some chat transcripts:  
-https://chatgpt.com/share/6a3bb267-f658-83ed-b6e0-613c3090deb7
+https://chatgpt.com/share/6a3bb267-f658-83ed-b6e0-613c3090deb7   
 https://gemini.google.com/share/db0b386e0cc4  
 

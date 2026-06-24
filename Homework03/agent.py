@@ -5,11 +5,17 @@ import numpy as np
 from torch.distributions import Categorical
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
+    """
+    Function to inialize the layers of the agent net in the same way of openai/baseline
+    """
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
 class Agent(nn.Module):
+    """
+    Agent Net it includes both the actor and the critic
+    """
     def __init__(self, envs, frame_stack_num=4):
         super().__init__()
         self.network = nn.Sequential(
@@ -27,11 +33,11 @@ class Agent(nn.Module):
         self.critic = layer_init(nn.Linear(512, 1), std=1)
 
     def get_value(self, x):
-        #immagine normalizzata tra 0 e 1
+        #normalize images in 0, 1
         return self.critic(self.network(x / 255.0))
     
     def get_value_and_action(self, x, action=None):
-        hidden = self.network(x / 255.0) #immagine normalizzata
+        hidden = self.network(x / 255.0) #normalize image in 0, 1
         dist = Categorical(logits= self.actor(hidden))
         if action is None:
             action = dist.sample()

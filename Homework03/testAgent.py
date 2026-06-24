@@ -33,6 +33,9 @@ def parse_args():
     return args
 
 def main():
+    """
+    Script to evaluate the performance of a trained agent
+    """
     args = parse_args()
 
     envs = make_vec_envs(
@@ -93,7 +96,7 @@ def main():
 
     results_file = os.path.join(results_dir,f"{exp_name}_{model_name}.txt")
     
-    # Salvataggio metriche
+    # Saving Metrics
     with open(results_file, "w") as f:
         f.write(f"Model path: {args.model_path}\n")
         f.write(f"Environment: {args.gym_id}\n")

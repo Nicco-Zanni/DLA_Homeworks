@@ -27,6 +27,8 @@ The repository is organized as a collection of projects, one for each laboratory
 ```text
 DLA_Homeworks/
 │
+├── assets/
+│
 ├── Homework01/
 │   ├── README.md
 │   ├── results/

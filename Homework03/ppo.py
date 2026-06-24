@@ -83,13 +83,16 @@ def parse_args():
     return args
 
 def compute_advantages(agent, buffer, next_done, next_obs, args):
+    """
+    Function to compute the GAE generalized advantage estimation or the one step advantage
+    """
     with torch.no_grad():
             next_value = agent.get_value(next_obs).reshape(1, -1)
-            if args.gae: #calculate GAE generalized advantage estimation
+            if args.gae: #compute GAE generalized advantage estimation
                 advantages = torch.zeros_like(buffer.rewards)
                 last_gae = 0
                 for t in reversed(range(args.num_steps)):
-                    if t == args.num_steps - 1: #ultimo step se l'episodio non é terminato stimo il return con il critic altrimenti é 0
+                    if t == args.num_steps - 1: #If at the last step the episode hasn't terminated the return is 0 otherwise uses the critic
                         next_non_terminal = 1.0 - next_done
                         next_return = next_value
                     else:
@@ -99,10 +102,10 @@ def compute_advantages(agent, buffer, next_done, next_obs, args):
                     last_gae = delta + args.gamma * args.gae_lambda * next_non_terminal * last_gae
                     advantages[t] = last_gae
                 returns = advantages + buffer.values
-            else: #one step advantage
+            else: #compute one step advantage
                 returns = torch.zeros_like(buffer.rewards)
                 for t in reversed(range(args.num_steps)):
-                    if t == args.num_steps - 1: #ultimo step se l'episodio non é terminato stimo il return con il critic altrimenti é 0
+                    if t == args.num_steps - 1: #If at the last step the episode hasn't terminated the return is 0 otherwise uses the critic
                         next_non_terminal = 1.0 - next_done
                         next_return = next_value
                     else:
@@ -113,6 +116,9 @@ def compute_advantages(agent, buffer, next_done, next_obs, args):
     return advantages, returns
 
 def collect_rollout(envs, agent, buffer, next_obs, next_done, global_step, args, device,):
+    """
+    Function to collect experience from the enviroments for num_steps
+    """
     episodic_returns = []
     episodic_lengths = []
     for step in range(args.num_steps):
@@ -123,16 +129,16 @@ def collect_rollout(envs, agent, buffer, next_obs, next_done, global_step, args,
 
         with torch.no_grad():
             action, logprob, _, value = agent.get_value_and_action(next_obs)
-            buffer.values[step] = value.flatten()#value prima di flatten é [8,1] tolgo dimensione inutile
+            buffer.values[step] = value.flatten()
 
         buffer.actions[step] = action
         buffer.logprobs[step] = logprob
 
         next_obs, reward, term, trunc, info = envs.step(action.cpu().numpy())
 
-        buffer.rewards[step] = torch.tensor(reward).to(device).view(-1) #ugale a value sopra
+        buffer.rewards[step] = torch.tensor(reward).to(device).view(-1) 
 
-        done = term | trunc#or logico serve per sapere se l'env ha finito
+        done = term | trunc
         next_obs = torch.Tensor(next_obs).to(device)
         next_done = torch.Tensor(done).to(device)
 
@@ -154,6 +160,9 @@ def collect_rollout(envs, agent, buffer, next_obs, next_done, global_step, args,
     return next_obs, next_done, global_step, avg_ep_return, avg_ep_length
 
 def update_agent(agent, optimizer, batch, args,):
+    """
+    Function to to perform update_epochs of agent updates
+    """
     b_inds = np.arange(args.batch_size)
     pg_losses = []
     v_losses = []
@@ -166,27 +175,31 @@ def update_agent(agent, optimizer, batch, args,):
         np.random.shuffle(b_inds)
         epoch_kls = []
         for start in range(0, args.batch_size, args.minibatch_size):
+            #create minibatch
             end = start + args.minibatch_size
             mb_inds = b_inds[start:end]
 
+            #compute new logprobs
             _, newlogprob, entropy, newvalue = agent.get_value_and_action(
                 batch.obs[mb_inds],
-                batch.actions.long()[mb_inds], #long perché Categorical voule indici int64
+                batch.actions.long()[mb_inds], 
             )
 
             logratio = newlogprob - batch.logprobs[mb_inds]
             ratio = logratio.exp()
 
-            with torch.no_grad():#sono metriche non serve il computattion graph
+            with torch.no_grad():
                     # calculate approx_kl http://joschu.net/blog/kl-approx.html
                     approx_kl = ((ratio - 1) - logratio).mean()
                     clipfracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean().item()]
                     epoch_kls.append(approx_kl.item())
 
+            #normalize advantages
             mb_advantages = batch.advantages[mb_inds]
             if args.norm_adv:
-                mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)#per evitare di dividere per zero
+                mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)#avoid zero division
 
+            #compute loss
             pg_loss1 = -mb_advantages * ratio
             pg_loss2 = -mb_advantages * torch.clamp(
                 ratio, 1 - args.clip_coef, 1 + args.clip_coef
@@ -213,6 +226,7 @@ def update_agent(agent, optimizer, batch, args,):
             approx_kls.append(approx_kl.item())
         
         mean_kl = np.mean(epoch_kls)
+        #if the new distribution is too differnt from the old one skip too the next epoch
         if args.target_kl is not None:
                 if mean_kl > args.target_kl:
                     break
@@ -227,6 +241,9 @@ def update_agent(agent, optimizer, batch, args,):
 
 @dataclass
 class PPOBatch:
+    """
+    Class to save data during env rollout
+    """
     obs: torch.Tensor
     actions: torch.Tensor
     logprobs: torch.Tensor
@@ -236,6 +253,9 @@ class PPOBatch:
 
 @dataclass
 class RolloutBuffer:
+    """
+    Class to save batch data
+    """
     obs: torch.Tensor
     actions: torch.Tensor
     logprobs: torch.Tensor
@@ -243,7 +263,7 @@ class RolloutBuffer:
     dones: torch.Tensor
     values: torch.Tensor
 
-    # flatten the batch dim del batch = num_steps * num envs
+    # flatten of the batch num_steps * num envs
     def to_batch(self, advantages: torch.Tensor, returns: torch.Tensor,) -> PPOBatch:
         return PPOBatch(
             obs=self.obs.reshape((-1,) + self.obs.shape[2:]),
@@ -255,6 +275,9 @@ class RolloutBuffer:
         )
 
 def setup(args, run_name):
+    """
+    Function to setup the envs, the seed, the model, the optimizer and Rolloutbuffer
+    """
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -282,6 +305,9 @@ def setup(args, run_name):
     return envs, agent, optimizer, buffer, device
 
 def save_checkpoint(agent, optimizer, global_step, update, args, path,):
+    """
+    function to save a checkpoint
+    """
     checkpoint = {
         "model_state_dict": agent.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
@@ -295,6 +321,9 @@ def save_checkpoint(agent, optimizer, global_step, update, args, path,):
     torch.save(checkpoint, path)
 
 def load_checkpoint(path, agent, optimizer, device):
+    """
+    function to load a checkpoint
+    """
     checkpoint = torch.load(path, map_location=device)
 
     agent.load_state_dict(checkpoint["model_state_dict"])
@@ -308,6 +337,9 @@ def load_checkpoint(path, agent, optimizer, device):
     return global_step, update
 
 def main():
+    """
+    PPO algorithm
+    """
     args = parse_args()
     run_name = f"{args.gym_id}__{args.exp_name}"
     checkpoint_dir = f"checkpoints/{run_name}"
@@ -329,9 +361,9 @@ def main():
     start_update = 1
     global_step = 0
     next_obs, _ = envs.reset()
-    next_obs = torch.Tensor(next_obs).to(device) #torch.Size([8, 3, 96, 96])
-    next_done = torch.zeros(args.num_envs).to(device) #torch.Size([8])
-    num_updates = args.total_timesteps // args.batch_size #9765
+    next_obs = torch.Tensor(next_obs).to(device)
+    next_done = torch.zeros(args.num_envs).to(device)
+    num_updates = args.total_timesteps // args.batch_size
 
     if args.resume is not None:
         global_step, start_update = load_checkpoint(

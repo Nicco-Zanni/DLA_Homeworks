@@ -9,18 +9,24 @@ import argparse
 from torch.distributions import Categorical
 
 def select_action(obs, policy):
+    """
+    Inputs: an enviroment observation and a policy net
+    Returns: a selected action for that state
+    """
     dist = Categorical(policy(obs))
     action = dist.sample()
     log_prob = dist.log_prob(action)
     return (action.item(), log_prob.reshape(1))
 
-# Utility to compute the discounted total reward.
 def compute_returns(rewards, gamma):
+    """
+    Function to compute the discounted total reward.
+    """
     returns = []
     running_return = 0.0
 
     #Gt = Rt + gamma * G(t+1)
-    #Parto calcolando il return dal fondo e running_return é sempre G(t+1)
+    #I start computing the return from the end, running_return is always G(t+1)
     for reward in reversed(rewards):
         running_return = reward + gamma * running_return
         returns.append(running_return)
@@ -28,8 +34,11 @@ def compute_returns(rewards, gamma):
     returns.reverse()
     return np.asarray(returns)
 
-# Given an environment and a policy, run it up to the maximum number of steps.
+
 def run_episode(env, policy, maxlen=500, device = "cpu"):
+    """
+    Given an environment and a policy, run it up to the maximum number of steps.
+    """
     # Collect just about everything.
     observations = []
     actions = []
@@ -54,40 +63,62 @@ def run_episode(env, policy, maxlen=500, device = "cpu"):
     return (observations, actions, torch.cat(log_probs), rewards)
 
 class PolicyNet(nn.Module):
+    """
+    A simple policy net
+    """
     def __init__(self, env):
         super().__init__()
         self.fc1 = nn.Linear(env.observation_space.shape[0], 128)
         self.fc2 = nn.Linear(128, env.action_space.n)
         
     def forward(self, s):
+        """
+        Returns the probability of taking each action
+        """
         s = F.relu(self.fc1(s))
         s = F.softmax(self.fc2(s), dim=-1)
         return s
 
 class StateValueNet(nn.Module):
+    """
+    A simple state value net that has the same architecture of the policy net
+    """
     def __init__(self, env):
         super().__init__()
         self.fc1 = nn.Linear(env.observation_space.shape[0], 128)
         self.fc2 = nn.Linear(128, 1)
 
     def forward(self, s):
+        """
+        Returns the predicted value of a state
+        """
         s = F.relu(self.fc1(s))
         s = self.fc2(s)
         return s
 
 def train_policy(log_probs, returns, opt):
+    """
+    Computes the loss and an optimization step for the policy net
+    """
     opt.zero_grad()
     loss = (-log_probs * returns).mean()
     loss.backward()
     opt.step()
 
 def train_value(state_values, returns, opt):
+    """
+    Computes the loss and an optimization step for the stateValue net
+    """
     opt.zero_grad()
     loss = F.mse_loss(state_values, returns)
     loss.backward()
     opt.step()
 
 def evaluate_agent(env, policy, M, device):
+    """
+    Given an enviroment and a policy run the enviroment for M episodes and
+    computes the average episodes reward and length
+    """
     total_rewards = 0.0
     episodes_lenghts = 0.0
     policy.eval()
@@ -101,6 +132,12 @@ def evaluate_agent(env, policy, M, device):
     return avg_rewards, avg_lenght
     
 def reinforce(policy, env, N, M, env_render=None, gamma=0.99, num_episodes=10, baseline = False, device = "cpu"):
+    """
+    Simple reinforce algorithm
+    Inputs: a policy net, a gymnasium enviroment, log every N episodes, M episodes of evaluation, an enviroment to render during evaluation
+    gamma to compute the rewars, num of train episodes, if baseline = True it standardizes the returns, device to use
+    Returns: a list of running rewards, a list of average rewards and a list of average episode length
+    """
     opt = torch.optim.Adam(policy.parameters(), lr=1e-2)
 
     # Track episode rewards in a list.
@@ -152,6 +189,13 @@ def reinforce(policy, env, N, M, env_render=None, gamma=0.99, num_episodes=10, b
     return running_rewards, avg_total_rewards, avg_episode_length
 
 def baseline_reinforce(policy, state_val_net, env, N, M, env_render=None, gamma=0.99, num_episodes=10, baseline = False, device = "cpu"):
+    """
+    Simple reinforce algorithm with baseline
+    Inputs: a policy net,a state value net, a gymnasium enviroment, log every N episodes, M episodes of evaluation, 
+    an enviroment to render during evaluation, gamma to compute the rewars, num of train episodes, if baseline = True it standardizes the returns,
+    the device to use
+    Returns: a list of average rewards and a list of average episode length
+    """
     opt = torch.optim.Adam(policy.parameters(), lr=1e-2)
     state_opt = torch.optim.Adam(state_val_net.parameters(), lr=1e-2)
 
@@ -194,6 +238,9 @@ def baseline_reinforce(policy, state_val_net, env, N, M, env_render=None, gamma=
     return avg_total_rewards, avg_episode_length
 
 def save_plot(data, title, xlabel, ylabel, filename, folder="results"):
+    """
+    Simple function to plot a graph
+    """
     os.makedirs(folder, exist_ok=True)
 
     filepath = os.path.join(folder, filename)
@@ -207,6 +254,9 @@ def save_plot(data, title, xlabel, ylabel, filename, folder="results"):
     plt.close()
 
 def setup(seed=2112, env_name='CartPole-v1', render=False):
+    """
+    Simple function to setup the seeds and the enviroment
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     torch.manual_seed(seed)
@@ -223,6 +273,10 @@ def setup(seed=2112, env_name='CartPole-v1', render=False):
     return device, env, env_render
 
 def final_evaluation(env_name, policy, device, episodes=10, seed=1234):
+    """
+    Function that render the specified number of episodes after the policy has been trained
+    Then in prints the average reward and episode lenght
+    """
     env_render = gym.make(env_name, render_mode='human')
     env_render.reset(seed=seed)
 
@@ -235,7 +289,17 @@ def final_evaluation(env_name, policy, device, episodes=10, seed=1234):
 
     return avg_reward, avg_length
 
-def run_experiment(trainer_fn, env_name='CartPole-v1', num_episodes=1000, num_test_episodes=10, N=100, M=20, gamma=0.99, seed=1221, test_seed=1234, render=False, prefix="", use_baseline=False, std=False, folder="results"):
+def run_experiment(trainer_fn, env_name='CartPole-v1', num_episodes=1000, num_test_episodes=10, N=100, M=20, gamma=0.99, 
+                   seed=1221, test_seed=1234, render=False, prefix="", use_baseline=False, std=False, folder="results"):
+    """
+    Function that runs the experiments of the first two excercises
+    Inputs: trainer_fn the reinforce algorithm to use, env_name the gymansium enviroment, num_episodes the number of training episodes,
+    num_test episodes the number of episodes done during final evaluation, N do an evaluation step evry N episodes during training,
+    M number of episodes done during validation step, gamma the value of gamma used to compute returns, seed is the seed for the gym enviorment,
+    test_seed seed to use for the env of fnal evaluation, if render = True renders an enviroment during validation step, 
+    use_baseline = True use iif you use the baseline_reinforce algorithm, std = True standardize the returns in the reinforce algorithm,
+    folder is the folder in which to save the results.
+    """
     # Setup
     device, env, env_render = setup(seed, env_name, render)
 
@@ -249,10 +313,12 @@ def run_experiment(trainer_fn, env_name='CartPole-v1', num_episodes=1000, num_te
 
     # Training
     if use_baseline:
-        avg_rewards, avg_lengths = trainer_fn(policy, state_val_net, env, N, M, env_render=env_render, gamma=gamma, num_episodes=num_episodes, device=device)
+        avg_rewards, avg_lengths = trainer_fn(policy, state_val_net, env, N, M, env_render=env_render, gamma=gamma, 
+                                              num_episodes=num_episodes, device=device)
         running_rewards = None
     else:
-        running_rewards, avg_rewards, avg_lengths = trainer_fn(policy, env, N, M, env_render=env_render, gamma=gamma, num_episodes=num_episodes, baseline= std, device=device)
+        running_rewards, avg_rewards, avg_lengths = trainer_fn(policy, env, N, M, env_render=env_render, gamma=gamma, 
+                                                               num_episodes=num_episodes, baseline= std, device=device)
 
     # Plot
     if running_rewards is not None:
