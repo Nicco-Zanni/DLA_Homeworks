@@ -17,7 +17,7 @@ class ImageRetrievalApp:
     """
     def __init__(self, features_path: str, model_name: str):
         """
-        Load the model and the dataset in memory
+        Load the model and the dataset in memory when started
         """
         
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
