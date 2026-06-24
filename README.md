@@ -29,6 +29,7 @@ DLA_Homeworks/
 │
 ├── Homework01/
 │   ├── README.md
+│   ├── results/
 │   ├── DLA-Lab1.ipynb
 │   ├── utils.py
 │   ├── configResNet.yaml
