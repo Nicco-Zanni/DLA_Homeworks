@@ -1,4 +1,4 @@
-experiment_name: Sesto_Tentativo_Finetune_tutto
+experiment_name: Settimo_Tentativo_Finetune_Tutto
 
 training:
   epochs: 30
